@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Class timetable'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row"><div><span class="eyebrow">ACADEMIC SCHEDULE</span><h1>{{ 'Class timetable'|translate(language) }}</h1><p class="muted">{{ 'Weekly teaching schedule and assigned class times.'|translate(language) }}</p></div></section>
+  {% if editable %}<section class="portal-card homework-form-card"><h2>{{ 'Add timetable entry'|translate(language) }}</h2><form method="post" class="homework-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>{{ 'Class'|translate(language) }}<select name="course_id" required><option value="">{{ 'Choose a class'|translate(language) }}</option>{% for course in courses %}<option value="{{ course.id }}">{{ course.name }}</option>{% endfor %}</select></label>
+    <label>{{ 'Weekday'|translate(language) }}<select name="weekday" required><option value="">{{ 'Choose a day'|translate(language) }}</option>{% for day in ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'] %}<option value="{{ loop.index0 }}">{{ day|translate(language) }}</option>{% endfor %}</select></label>
+    <label>{{ 'Start time'|translate(language) }}<input name="starts_at" type="time" required></label><label>{{ 'End time'|translate(language) }}<input name="ends_at" type="time" required></label>
+    <label>{{ 'Room'|translate(language) }}<input name="room" maxlength="80"></label><button type="submit">{{ 'Add to timetable'|translate(language) }}</button>
+  </form></section>{% endif %}
+  <section class="portal-card account-list-card">{% if records %}<div class="table-scroll"><table><thead><tr><th>{{ 'Weekday'|translate(language) }}</th><th>{{ 'Time'|translate(language) }}</th><th>{{ 'Class'|translate(language) }}</th><th>{{ 'Room'|translate(language) }}</th>{% if editable %}<th>{{ 'Action'|translate(language) }}</th>{% endif %}</tr></thead><tbody>
+    {% for item in records %}<tr><td>{{ ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][item.weekday]|translate(language) }}</td><td>{{ item.starts_at }}–{{ item.ends_at }}</td><td>{{ item.course_name }}</td><td>{{ item.room or '—' }}</td>{% if editable %}<td><form method="post" action="{{ url_for('views.delete_timetable_entry', entry_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small secondary-button" type="submit">{{ 'Delete'|translate(language) }}</button></form></td>{% endif %}</tr>{% endfor %}
+  </tbody></table></div>{% else %}<div class="card-empty"><p>{{ 'No timetable entries have been added.'|translate(language) }}</p></div>{% endif %}</section>
+{% endblock %}

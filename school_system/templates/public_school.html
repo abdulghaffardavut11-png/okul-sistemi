@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ school_name }} · School Community{% endblock %}
+{% block robots_meta %}index, follow{% endblock %}
+{% block description %}Welcome to {{ school_name }}. Connect with our school community and access the secure school portal.{% endblock %}
+{% block og_title %}{{ school_name }} · School Community{% endblock %}
+{% block canonical %}<link rel="canonical" href="{{ site_url }}{{ url_for('views.public_school_page') }}">{% endblock %}
+{% block body_class %}public-body{% endblock %}
+{% block public_content %}
+  <main class="public-page">
+    <header class="public-header">
+      <a class="public-brand" href="{{ url_for('views.public_school_page') }}">
+        {% if brand_settings.get('logo_filename') %}<img src="{{ url_for('views.uploaded_logo', filename=brand_settings.get('logo_filename')) }}" alt="{{ school_name }} logo">{% else %}<span class="logo-mark">W</span>{% endif %}
+        <span>{{ school_name }}</span>
+      </a>
+      <a class="public-login-link" href="{{ url_for('auth.login') }}">Portal sign in <span>→</span></a>
+    </header>
+    <section class="public-hero">
+      <span class="eyebrow">LEARNING · GROWING · ACHIEVING</span>
+      <h1>{{ landing_settings.get('landing_title', 'A connected community. A brighter future.') }}</h1>
+      {% if brand_settings.get('hero_image_filename') or brand_settings.get('landing_image_filename') %}<img class="public-hero-image" src="{{ url_for('views.uploaded_logo', filename=brand_settings.get('hero_image_filename') or brand_settings.get('landing_image_filename')) }}" alt="{{ school_name }} school community">{% endif %}
+      <p>{{ landing_settings.get('landing_text', 'Welcome to ' ~ school_name ~ ', a community where students, families and educators come together to support learning and growth.') }}</p>
+      <a class="public-cta" href="{{ url_for('auth.login') }}">Visit the school portal <span>→</span></a>
+    </section>
+    <section class="public-values">
+      <article><span>01</span><h2>Learning</h2><p>Encouraging curiosity, confidence and a lifelong love of learning.</p></article>
+      <article><span>02</span><h2>Community</h2><p>Working together with students, families and educators.</p></article>
+      <article><span>03</span><h2>Growth</h2><p>Helping every learner build toward their own bright future.</p></article>
+    </section>
+    <footer class="public-footer">© {{ current_year }} {{ school_name }} <span>·</span> <a href="{{ url_for('auth.login') }}">Secure portal</a></footer>
+  </main>
+{% endblock %}

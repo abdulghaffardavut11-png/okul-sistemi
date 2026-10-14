@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Student Registration & Attendance'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row">
+    <div><span class="eyebrow">{{ 'Student Operations'|translate(language) }}</span>
+      <h1>{{ 'Student Registration & Attendance'|translate(language) }}</h1>
+      <p class="muted">{{ 'Register a student with a class assignment or open the daily attendance register.'|translate(language) }}</p>
+    </div>
+  </section>
+  <style>
+    .portal-container{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;align-items:start}
+    .left-section{display:grid;min-width:0;gap:18px}
+    .portal-section,.student-profile{min-width:0;padding:20px;border:1px solid var(--line);border-radius:12px;background:#fff;box-shadow:0 2px 5px #23364b05}
+    .portal-section h2{margin-bottom:5px}
+    .section-description{margin:0 0 15px;color:var(--muted);font-size:.78rem}
+    .workflow-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .workflow-form label{display:grid;gap:6px;color:var(--ink);font-size:.78rem;font-weight:700}
+    .workflow-form input,.workflow-form select,.roster-filter select{width:100%;min-height:40px;padding:8px 10px;border:1px solid #dce2ea;border-radius:8px;background:#fff;color:var(--ink);font:inherit}
+    .workflow-form .wide{grid-column:1/-1}
+    .workflow-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+    .workflow-errors{margin:0 0 14px;color:#a32d37}
+    .grade-buttons{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+    .grade-btn{display:inline-flex;align-items:center;min-height:36px;padding:7px 12px;border:1px solid #cbd5e1;border-radius:7px;background:#f1f5f9;color:var(--ink);font-size:.76rem;font-weight:700}
+    .grade-btn:hover,.grade-btn.active{border-color:var(--primary);background:var(--primary);color:#fff}
+    .selected-grade-title{margin:14px 0 0;color:var(--primary);font-size:.82rem;font-weight:700}
+    .student-box-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:9px;max-height:260px;margin-top:10px;padding:2px;overflow-y:auto}
+    .student-item{display:grid;gap:3px;padding:11px;border:1px solid #dce2ea;border-radius:8px;background:#f8fafc;color:var(--ink);text-align:left}
+    .student-item:hover,.student-item[aria-pressed="true"]{border-color:var(--primary);background:#f0f5ff}
+    .student-item small{overflow-wrap:anywhere;color:var(--muted);font-size:.68rem}
+    .student-profile{position:sticky;top:90px}
+    .profile-header{display:grid;justify-items:center;padding-bottom:15px;margin-bottom:15px;border-bottom:1px solid var(--line);text-align:center}
+    .profile-avatar{display:grid;width:82px;height:82px;place-items:center;margin-bottom:9px;border-radius:50%;background:#e8effb;color:var(--primary);font-size:1.6rem;font-weight:800;object-fit:cover}
+    .profile-avatar[hidden]{display:none}
+    .profile-header h2{margin:0 0 6px;font-size:.98rem}
+    .profile-grade{padding:3px 9px;border-radius:12px;background:#e8effb;color:var(--primary);font-size:.7rem}
+    .profile-section-title{margin:16px 0 8px;padding-left:8px;border-left:3px solid var(--primary);color:var(--ink);font-size:.78rem;font-weight:750}
+    .info-row{display:grid;grid-template-columns:minmax(85px,.8fr) minmax(0,1.2fr);gap:8px;margin-bottom:7px;font-size:.74rem}
+    .info-label{color:var(--muted);font-weight:700}
+    .info-value{overflow-wrap:anywhere}
+    .roster-filter{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:end;margin-bottom:14px}
+    .roster-filter label{display:grid;gap:5px;color:var(--muted);font-size:.74rem;font-weight:700}
+    .roster-filter button{min-height:40px}
+    .attendance-table-scroll{width:100%;overflow-x:auto}
+    .attendance-table{width:100%;border-collapse:collapse;margin:14px 0}
+    .attendance-table th,.attendance-table td{padding:9px;border:1px solid var(--line);text-align:center}
+    .attendance-table th{background:#f8fafc;font-size:.72rem}
+    .attendance-table th:first-child,.attendance-table td:first-child{text-align:left}
+    .attendance-choice{position:relative;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+    .attendance-choice input{position:absolute;width:1px;height:1px;opacity:0}
+    .attendance-status{display:inline-flex;min-width:74px;justify-content:center;padding:6px 8px;border:1px solid currentColor;border-radius:999px;font-size:.68rem;font-weight:750;white-space:nowrap;opacity:.55}
+    .status-present{color:#16803c;background:#eaf7ee}
+    .status-absent{color:#b42318;background:#fff0ef}
+    .status-late{color:#946200;background:#fff8df}
+    .status-excused{color:#1758a6;background:#edf4ff}
+    .attendance-choice input:checked+.attendance-status{opacity:1;box-shadow:0 0 0 2px currentColor}
+    .attendance-choice input:focus-visible+.attendance-status{outline:2px solid var(--ink);outline-offset:2px}
+    .mark-all{padding:0;border:0;background:none;color:var(--primary);font:inherit;font-weight:700}
+    .attendance-save{width:100%;margin-top:3px}
+    @media(max-width:900px){.portal-container{grid-template-columns:minmax(0,1fr) 300px}}
+    @media(max-width:720px){.portal-container{grid-template-columns:1fr}.student-profile{position:static;grid-row:1}}
+    @media(max-width:520px){.workflow-form{grid-template-columns:1fr}.workflow-form .wide{grid-column:auto}.roster-filter{grid-template-columns:1fr 1fr}.roster-filter label{grid-column:1/-1}.roster-filter button{width:100%}.portal-section,.student-profile{padding:16px}}
+  </style>
+
+  <div class="portal-container">
+    <div class="left-section">
+      <section class="portal-section" aria-labelledby="student-registration-title">
+        <h2 id="student-registration-title">{{ 'Add a new student'|translate(language) }}</h2>
+        {% if errors %}
+          <ul class="workflow-errors" role="alert">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
+        {% endif %}
+        {% if courses %}
+          <form method="post" class="workflow-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>{{ 'Student full name'|translate(language) }}
+              <input name="name" maxlength="120" value="{{ values.name }}" required autocomplete="name">
+            </label>
+            <label>{{ 'Student email'|translate(language) }}
+              <input name="email" type="email" maxlength="254" value="{{ values.email }}" required autocomplete="email">
+            </label>
+            <label>{{ 'Class / grade'|translate(language) }}
+              <select name="course_id" required>
+                <option value="">{{ 'Choose a class'|translate(language) }}</option>
+                {% for course in courses %}
+                  <option value="{{ course.id }}" {% if values.course_id == course.id|string %}selected{% endif %}>{{ course.name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>{{ "Father's phone"|translate(language) }}
+              <input name="father_phone" type="tel" maxlength="40" value="{{ values.father_phone }}" autocomplete="tel">
+            </label>
+            <label>{{ "Mother's phone"|translate(language) }}
+              <input name="mother_phone" type="tel" maxlength="40" value="{{ values.mother_phone }}" autocomplete="tel">
+            </label>
+            <label>{{ "Father's occupation"|translate(language) }}
+              <input name="father_occupation" maxlength="120" value="{{ values.father_occupation }}">
+            </label>
+            <label>{{ "Mother's occupation"|translate(language) }}
+              <input name="mother_occupation" maxlength="120" value="{{ values.mother_occupation }}">
+            </label>
+            <div class="wide workflow-actions">
+              <button type="submit">{{ 'Register student'|translate(language) }}</button>
+              <a class="button-small secondary-button" href="{{ url_for('views.manage', resource='students') }}">{{ 'Student Information'|translate(language) }}</a>
+            </div>
+          </form>
+        {% else %}
+          <div class="card-empty"><p>{{ 'Create a class before registering a student.'|translate(language) }}</p>
+            <a class="button-small secondary-button" href="{{ url_for('views.manage_classes') }}">{{ 'Class Management'|translate(language) }}</a>
+          </div>
+        {% endif %}
+      </section>
+
+      <section class="portal-section" aria-labelledby="class-roster-title">
+        <h2 id="class-roster-title">{{ 'Current student list'|translate(language) }}</h2>
+        <p class="section-description">{{ academic_year_label }} · {{ registered_students|length }} {{ 'students'|translate(language) }}</p>
+        <nav class="grade-buttons" aria-label="{{ 'Class / grade'|translate(language) }}">
+          <a class="grade-btn{% if not registered_course_id %} active{% endif %}"
+            href="{{ url_for('views.student_registration', tab='student') }}"
+            {% if not registered_course_id %}aria-current="true"{% endif %}>{{ 'All classes'|translate(language) }}</a>
+          {% for course in courses %}
+            <a class="grade-btn{% if registered_course_id == course.id %} active{% endif %}"
+              href="{{ url_for('views.student_registration', tab='student', registered_course_id=course.id) }}"
+              {% if registered_course_id == course.id %}aria-current="true"{% endif %}>{{ course.name }}</a>
+          {% endfor %}
+        </nav>
+        {% if registered_course_id %}
+          <p class="selected-grade-title">{{ registered_course.name }}</p>
+        {% endif %}
+        {% if registered_students %}
+          <div class="student-box-list" aria-label="{{ 'Current student list'|translate(language) }}">
+            {% for student in registered_students %}
+              <button type="button" class="student-item" aria-pressed="{{ 'true' if loop.first else 'false' }}"
+                data-name="{{ student.name }}" data-email="{{ student.email }}"
+                data-class="{{ student.class_names }}"
+                data-father-name="{{ student.father_name or '' }}"
+                data-father-phone="{{ student.father_phone or '' }}"
+                data-father-occupation="{{ student.father_occupation or '' }}"
+                data-mother-name="{{ student.mother_name or '' }}"
+                data-mother-phone="{{ student.mother_phone or '' }}"
+                data-mother-occupation="{{ student.mother_occupation or '' }}"
+                data-address="{{ student.home_address or '' }}"
+                data-picture="{% if student.profile_picture %}{{ url_for('views.profile_image', filename=student.profile_picture) }}{% endif %}">
+                <strong>{{ student.name }}</strong>
+                <small>{{ student.class_names }} · {{ student.email }}</small>
+              </button>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="card-empty"><p>{{ 'No students yet'|translate(language) }}</p></div>
+        {% endif %}
+      </section>
+
+      {% if attendance_enabled %}
+      <section class="portal-section" aria-labelledby="attendance-title">
+        <h2 id="attendance-title">{{ 'Daily class attendance'|translate(language) }}</h2>
+        <p class="section-description">{{ 'Choose a class and date to open its live student roster. Attendance is saved in the class register.'|translate(language) }}</p>
+        <form method="get" action="{{ url_for('views.student_registration') }}" class="roster-filter">
+          <input type="hidden" name="tab" value="attendance">
+          <label>{{ 'Class'|translate(language) }}
+            <select name="course_id" required>
+              <option value="">{{ 'Choose a class'|translate(language) }}</option>
+              {% for course in courses %}
+                <option value="{{ course.id }}" {% if selected_course and selected_course.id == course.id %}selected{% endif %}>{{ course.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>{{ 'Attendance date'|translate(language) }}
+            <input type="date" name="attendance_date" value="{{ attendance_date or today }}" required>
+          </label>
+          <button type="submit">{{ 'Load attendance roster'|translate(language) }}</button>
+        </form>
+        {% if selected_course %}
+          <div class="roster-title">
+            <h3>{{ selected_course.name }}</h3>
+            <p class="section-description">{{ attendance_date }} · {{ attendance_students|length }} {{ 'students'|translate(language) }}</p>
+          </div>
+          {% if attendance_students %}
+            <form method="post" action="{{ url_for('views.student_registration') }}" class="attendance-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="action" value="attendance">
+              <input type="hidden" name="active_tab" value="attendance">
+              <input type="hidden" name="course_id" value="{{ selected_course.id }}">
+              <input type="hidden" name="attendance_date" value="{{ attendance_date }}">
+              <div class="attendance-table-scroll">
+                <table class="attendance-table">
+                  <thead><tr>
+                    <th>{{ 'Student'|translate(language) }}</th>
+                    {% for status in ['Present','Absent','Late','Excused'] %}
+                      <th><button type="button" class="mark-all" data-mark-all="{{ status }}">{{ status|translate(language) }}</button></th>
+                    {% endfor %}
+                  </tr></thead>
+                  <tbody>{% for student in attendance_students %}<tr>
+                    <td><strong>{{ student.name }}</strong></td>
+                    {% for status, badge_class in [('Present','status-present'),('Absent','status-absent'),('Late','status-late'),('Excused','status-excused')] %}
+                      <td><label class="attendance-choice">
+                        <input type="radio" name="status_{{ student.enrollment_id }}" value="{{ status }}"
+                          aria-label="{{ student.name }}: {{ status|translate(language) }}"
+                          {% if student.status == status %}checked{% endif %}>
+                        <span class="attendance-status {{ badge_class }}">{{ status|translate(language) }}</span>
+                      </label></td>
+                    {% endfor %}
+                  </tr>{% endfor %}</tbody>
+                </table>
+              </div>
+              <button class="attendance-save" type="submit">{{ 'Save attendance'|translate(language) }}</button>
+            </form>
+          {% else %}
+            <div class="card-empty"><p>{{ 'No students are enrolled in this class.'|translate(language) }}</p></div>
+          {% endif %}
+        {% endif %}
+      </section>
+      {% endif %}
+    </div>
+
+    <aside class="student-profile" aria-labelledby="profile-name">
+      <div class="profile-header">
+        <img class="profile-avatar" id="profile-avatar" alt="" hidden>
+        <div class="profile-avatar" id="profile-placeholder" aria-hidden="true">?</div>
+        <h2 id="profile-name">{{ 'Select a student'|translate(language) }}</h2>
+        <span class="profile-grade" id="profile-class">-</span>
+      </div>
+      <div class="profile-section-title">{{ 'Father information'|translate(language) }}</div>
+      <div class="info-row"><span class="info-label">{{ "Father's name"|translate(language) }}</span><span class="info-value" id="profile-father-name">-</span></div>
+      <div class="info-row"><span class="info-label">{{ 'Phone'|translate(language) }}</span><span class="info-value" id="profile-father-phone">-</span></div>
+      <div class="info-row"><span class="info-label">{{ 'Occupation'|translate(language) }}</span><span class="info-value" id="profile-father-occupation">-</span></div>
+      <div class="profile-section-title">{{ 'Mother information'|translate(language) }}</div>
+      <div class="info-row"><span class="info-label">{{ "Mother's name"|translate(language) }}</span><span class="info-value" id="profile-mother-name">-</span></div>
+      <div class="info-row"><span class="info-label">{{ 'Phone'|translate(language) }}</span><span class="info-value" id="profile-mother-phone">-</span></div>
+      <div class="info-row"><span class="info-label">{{ 'Occupation'|translate(language) }}</span><span class="info-value" id="profile-mother-occupation">-</span></div>
+      <div class="profile-section-title">{{ 'Address information'|translate(language) }}</div>
+      <div class="info-row"><span class="info-value" id="profile-address">-</span></div>
+      <div class="info-row"><span class="info-label">{{ 'Email'|translate(language) }}</span><span class="info-value" id="profile-email">-</span></div>
+    </aside>
+  </div>
+  <script>
+    (() => {
+      const studentCards = document.querySelectorAll('.student-item');
+      const profileFields = {
+        class: 'profile-class',
+        email: 'profile-email',
+        fatherName: 'profile-father-name',
+        fatherPhone: 'profile-father-phone',
+        fatherOccupation: 'profile-father-occupation',
+        motherName: 'profile-mother-name',
+        motherPhone: 'profile-mother-phone',
+        motherOccupation: 'profile-mother-occupation',
+        address: 'profile-address'
+      };
+      const showStudentProfile = (card) => {
+        studentCards.forEach((item) => item.setAttribute('aria-pressed', String(item === card)));
+        document.getElementById('profile-name').textContent = card.dataset.name;
+        Object.entries(profileFields).forEach(([field, elementId]) => {
+          document.getElementById(elementId).textContent = card.dataset[field] || '-';
+        });
+        const picture = document.getElementById('profile-avatar');
+        const placeholder = document.getElementById('profile-placeholder');
+        if (card.dataset.picture) {
+          picture.src = card.dataset.picture;
+          picture.alt = card.dataset.name;
+          picture.hidden = false;
+          placeholder.hidden = true;
+        } else {
+          picture.hidden = true;
+          picture.removeAttribute('src');
+          placeholder.textContent = card.dataset.name.trim().charAt(0).toLocaleUpperCase();
+          placeholder.hidden = false;
+        }
+      };
+      studentCards.forEach((card) => {
+        card.addEventListener('click', () => showStudentProfile(card));
+      });
+      if (studentCards.length) showStudentProfile(studentCards[0]);
+
+      document.querySelectorAll('[data-mark-all]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const status = button.dataset.markAll;
+          document.querySelectorAll(`input[type="radio"][value="${status}"]`)
+            .forEach((radio) => { radio.checked = true; });
+        });
+      });
+    })();
+  </script>
+{% endblock %}

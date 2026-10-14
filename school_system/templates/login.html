@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block body_class %}login-body{% endblock %}
+{% block title %}Sign in · {{ school_name }}{% endblock %}
+{% block public_content %}
+  <main class="login-layout">
+    <section class="login-showcase">
+      <div class="login-brand">
+        {% if brand_settings.get('logo_filename') %}
+          <img class="login-logo" src="{{ url_for('views.uploaded_logo', filename=brand_settings.get('logo_filename')) }}" alt="{{ school_name }} logo">
+        {% else %}<span class="logo-mark logo-mark-large">W</span>{% endif %}
+        <span>{{ school_name }}</span>
+      </div>
+      <div class="showcase-copy">
+        <span class="eyebrow">YOUR SCHOOL, CONNECTED</span>
+        <h1>A brighter way<br>to learn together.</h1>
+        <p>One secure place for learning, teaching and keeping every school day in sync.</p>
+      </div>
+      <span class="showcase-caption">Learning. Growing. Achieving.</span>
+    </section>
+    <section class="login-panel">
+      <div class="login-form-wrap">
+        <div class="mobile-login-brand">
+          {% if brand_settings.get('logo_filename') %}<img src="{{ url_for('views.uploaded_logo', filename=brand_settings.get('logo_filename')) }}" alt="">
+          {% else %}<span class="logo-mark">W</span>{% endif %}
+          <b>{{ school_name }}</b>
+        </div>
+        <span class="eyebrow">{{ 'Welcome back'|translate(language) }}</span>
+        <h2>{{ 'Sign in to your portal'|translate(language) }}</h2>
+        <p class="login-subtitle">{{ 'Enter your username or registered student email to continue.'|translate(language) }}</p>
+        <form method="post" class="login-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label for="username">{{ 'Username or student email'|translate(language) }}</label>
+          <input id="username" name="username" type="text" autocomplete="username" placeholder="{{ 'Enter your username or email'|translate(language) }}" required autofocus>
+          <label for="password">{{ 'Password'|translate(language) }}</label>
+          <div class="password-field">
+            <input id="password" name="password" type="password" autocomplete="current-password" placeholder="{{ 'Enter your password'|translate(language) }}" required>
+            <button class="password-toggle" type="button" aria-label="Show password" data-password-toggle>Show</button>
+          </div>
+          <button class="login-submit" type="submit">{{ 'Sign in'|translate(language) }} <span aria-hidden="true">→</span></button>
+        </form>
+        <p class="login-help">{{ 'Need help signing in? Please contact your school administrator.'|translate(language) }}</p>
+        <div class="login-security"><span aria-hidden="true">⌑</span> {{ 'Your account and school data are protected.'|translate(language) }}</div>
+      </div>
+      <footer class="login-footer">© {{ current_year }} {{ school_name }}
+        <form class="language-select" method="post" action="{{ url_for('views.change_language') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <select name="language" aria-label="Language" onchange="this.form.submit()">
+            {% for code, label in languages.items() %}
+              <option value="{{ code }}" {% if language == code %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </form>
+      </footer>
+    </section>
+  </main>
+  <script src="{{ url_for('static', filename='portal.js') }}" defer></script>
+{% endblock %}

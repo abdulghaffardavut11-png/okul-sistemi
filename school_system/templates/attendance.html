@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Attendance'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <style>
+    .attendance-choice{position:relative;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+    .attendance-choice input{position:absolute;width:1px;height:1px;opacity:0}
+    .attendance-status{display:inline-flex;min-width:74px;justify-content:center;padding:6px 8px;border:1px solid currentColor;border-radius:999px;font-size:.68rem;font-weight:750;white-space:nowrap;opacity:.55}
+    .status-present{color:#16803c;background:#eaf7ee}
+    .status-absent{color:#b42318;background:#fff0ef}
+    .status-late{color:#946200;background:#fff8df}
+    .status-excused{color:#1758a6;background:#edf4ff}
+    .attendance-choice input:checked+.attendance-status{opacity:1;box-shadow:0 0 0 2px currentColor}
+    .attendance-choice input:focus-visible+.attendance-status{outline:2px solid var(--ink);outline-offset:2px}
+  </style>
+  <section class="page-title-row">
+    <div><span class="eyebrow">{{ 'Student Operations'|translate(language) }}</span><h1>{{ 'Interactive attendance'|translate(language) }}</h1>
+      <p class="muted">{{ 'Select a class and date, mark each student, then save the full register.'|translate(language) }}</p></div>
+    {% if session.get('role') in ('super_admin', 'manager', 'admin') %}
+      <a class="button-small secondary-button" href="{{ url_for('views.student_registration', tab='attendance') }}">{{ 'Back to Student Registration & Attendance'|translate(language) }}</a>
+    {% endif %}
+  </section>
+  <section class="portal-card roster-card">
+    <form method="get" class="roster-filter">
+      <label>{{ 'Class'|translate(language) }}<select name="class_name" class="form-control" required>
+        <option value="">{{ 'Choose a class'|translate(language) }}</option>
+        {% for course in courses %}<option value="{{ course.name }}" {% if selected_course and selected_course.name == course.name %}selected{% endif %}>{{ course.name }}</option>{% endfor %}
+      </select></label>
+      <label>{{ 'Attendance date'|translate(language) }}<input type="date" name="attendance_date" value="{{ attendance_date }}" required></label>
+      <button type="submit">{{ 'Load students'|translate(language) }}</button>
+    </form>
+  </section>
+  {% if selected_course %}
+    <section class="portal-card roster-card">
+      <div class="roster-title"><div><h2>{{ selected_course.name }}</h2><p>{{ attendance_date }} · {{ students|length }} {{ 'students'|translate(language) }}</p></div></div>
+      {% if students %}
+        <form method="post" class="attendance-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="course_id" value="{{ selected_course.id }}">
+          <input type="hidden" name="attendance_date" value="{{ attendance_date }}">
+          <div class="attendance-table-scroll">
+            <table class="attendance-table">
+              <thead><tr><th>{{ 'Student'|translate(language) }}</th><th>{{ 'Class / grade'|translate(language) }}</th>
+                {% for status in ['Present','Absent','Late','Excused'] %}
+                  <th><button type="button" class="mark-all" data-mark-all="{{ status }}">{{ status|translate(language) }}</button></th>
+                {% endfor %}
+              </tr></thead>
+              <tbody>{% for student in students %}<tr>
+                <td><strong>{{ student.name }}</strong></td><td>{{ student.grade_level }}</td>
+                {% for status, badge_class in [('Present','status-present'),('Absent','status-absent'),('Late','status-late'),('Excused','status-excused')] %}
+                  <td><label class="attendance-choice">
+                    <input type="radio" name="status_{{ student.enrollment_id }}" value="{{ status }}"
+                      aria-label="{{ student.name }}: {{ status|translate(language) }}"
+                      {% if student.status == status %}checked{% endif %}>
+                    <span class="attendance-status {{ badge_class }}">{{ status|translate(language) }}</span>
+                  </label></td>
+                {% endfor %}
+              </tr>{% endfor %}</tbody>
+            </table>
+          </div>
+          <button type="submit">{{ 'Save attendance'|translate(language) }}</button>
+        </form>
+      {% else %}<div class="card-empty"><p>{{ 'No students are enrolled in this class.'|translate(language) }}</p></div>{% endif %}
+    </section>
+    <script>
+      document.querySelectorAll('[data-mark-all]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const status = button.dataset.markAll;
+          document.querySelectorAll(`input[type="radio"][value="${status}"]`)
+            .forEach((radio) => { radio.checked = true; });
+        });
+      });
+    </script>
+  {% endif %}
+{% endblock %}

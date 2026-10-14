@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Class Management'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row">
+    <div>
+      <span class="eyebrow">{{ 'SUPER ADMINISTRATION'|translate(language) }}</span>
+      <h1>{{ 'Class Management'|translate(language) }}</h1>
+      <p class="muted">{{ 'Create school classes, assign teachers, and review enrolled students.'|translate(language) }}</p>
+    </div>
+  </section>
+  <div class="admin-grid">
+    <section class="portal-card user-form-card">
+      <div class="card-heading"><div><span class="card-icon lavender">＋</span><div><h2>{{ 'Add class'|translate(language) }}</h2><p>{{ 'Choose an existing teacher profile for the new class.'|translate(language) }}</p></div></div></div>
+      {% if teachers %}
+        <form method="post" class="stack user-create-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="add">
+          <label for="class-name">{{ 'Class name'|translate(language) }}</label>
+          <input id="class-name" name="name" maxlength="120" required>
+          <label for="class-code">{{ 'Class code'|translate(language) }}</label>
+          <input id="class-code" name="code" maxlength="40" required>
+          <label for="teacher-id">{{ 'Assigned teacher'|translate(language) }}</label>
+          <select id="teacher-id" name="teacher_id" required>
+            <option value="">{{ 'Choose a teacher'|translate(language) }}</option>
+            {% for teacher in teachers %}
+              <option value="{{ teacher.id }}">{{ teacher.name }}{% if teacher.subject %} · {{ teacher.subject }}{% endif %}</option>
+            {% endfor %}
+          </select>
+          <button type="submit">{{ 'Add class'|translate(language) }}</button>
+        </form>
+      {% else %}
+        <div class="card-empty"><p>{{ 'Add a teacher profile before creating a class.'|translate(language) }}</p></div>
+      {% endif %}
+    </section>
+    <section class="portal-card account-list-card">
+      <div class="card-heading"><div><span class="card-icon blue">▤</span><div><h2>{{ 'Classes'|translate(language) }}</h2><p>{{ academic_year }} · {{ classes|length }} {{ 'classes'|translate(language) }}</p></div></div></div>
+      {% if classes %}
+        <div class="class-management-list">
+          {% for course in classes %}
+            <article class="class-management-item">
+              <div class="class-management-heading">
+                <div>
+                  <h3>{{ course.name }} <small>{{ course.code }}</small></h3>
+                  <p>{{ 'Assigned teacher'|translate(language) }}: {{ course.teacher_name }}</p>
+                  <p>{{ course.current_year_count }} {{ 'students enrolled'|translate(language) }} · {{ course.enrollment_count }} {{ 'total enrollments'|translate(language) }}</p>
+                </div>
+                <form method="post" onsubmit="return confirm('{{ 'Delete this class? Classes with linked records cannot be deleted.'|translate(language) }}');">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="action" value="delete">
+                  <input type="hidden" name="course_id" value="{{ course.id }}">
+                  <button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button>
+                </form>
+              </div>
+              <details>
+                <summary>{{ 'View enrolled students'|translate(language) }}</summary>
+                {% if rosters[course.id] %}
+                  <div class="table-scroll"><table>
+                    <thead><tr><th>{{ 'Student'|translate(language) }}</th><th>{{ 'Class / grade'|translate(language) }}</th><th>{{ 'Academic year'|translate(language) }}</th></tr></thead>
+                    <tbody>{% for student in rosters[course.id] %}<tr><td>{{ student.name }}</td><td>{{ student.grade_level }}</td><td>{{ student.academic_year }}-{{ student.academic_year + 1 }}</td></tr>{% endfor %}</tbody>
+                  </table></div>
+                {% else %}
+                  <p class="muted">{{ 'No students enrolled in this class yet.'|translate(language) }}</p>
+                {% endif %}
+              </details>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="card-empty"><p>{{ 'No classes yet'|translate(language) }}</p></div>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}

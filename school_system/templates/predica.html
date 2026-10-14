@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Performance Forecast'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row">
+    <div>
+      <span class="eyebrow">{{ 'Student Operations'|translate(language) }}</span>
+      <h1>{{ 'Performance Forecast'|translate(language) }}</h1>
+      <p class="muted">{{ 'A transparent estimate based on recorded grades and attendance for the current academic year.'|translate(language) }}</p>
+    </div>
+  </section>
+  <section class="portal-card">
+    {% if predictions %}
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>{{ 'Student'|translate(language) }}</th>
+              <th>{{ 'Class / grade'|translate(language) }}</th>
+              <th>{{ 'Subject / class'|translate(language) }}</th>
+              <th>{{ 'Recorded grade average'|translate(language) }}</th>
+              <th>{{ 'Attendance rate'|translate(language) }}</th>
+              <th>{{ 'Estimated score'|translate(language) }}</th>
+              <th>{{ 'Risk level'|translate(language) }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in predictions %}
+              <tr>
+                <td>{{ row.name }}</td>
+                <td>{{ row.grade_level }}</td>
+                <td>{{ row.course_name }}</td>
+                <td>{{ '%.1f'|format(row.average_score) if row.average_score is not none else '—' }}</td>
+                <td>{{ '%.1f%%'|format(row.attendance_rate) if row.attendance_rate is not none else '—' }}</td>
+                <td>{{ '%.1f%%'|format(row.predicted_score) if row.predicted_score is not none else '—' }}</td>
+                <td>{{ row.risk_level|translate(language) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted">{{ 'This is an indicative calculation, not a guarantee of future results.'|translate(language) }}</p>
+    {% else %}
+      <div class="card-empty"><p>{{ 'No enrolled students or academic records were found for this year.'|translate(language) }}</p></div>
+    {% endif %}
+  </section>
+{% endblock %}

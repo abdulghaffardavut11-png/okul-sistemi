@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ module|replace('-', ' ')|title|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row"><div><span class="eyebrow">SCHOOL PORTAL</span><h1>{{ module|replace('-', ' ')|title|translate(language) }}</h1><p class="muted">{{ 'School information and service workspace.'|translate(language) }}</p></div></section>
+  {% if module == 'bulk-sms' %}<section class="portal-card"><p class="muted">{{ 'Internal request tracking only. No SMS messages are sent because a messaging provider is not configured.'|translate(language) }}</p></section>{% endif %}
+  {% if can_create %}
+    <section class="portal-card calendar-form-card"><h2>{{ ('Add appointment' if module == 'appointments' else 'Publish announcement' if module == 'bulletin' else 'Create request')|translate(language) }}</h2>
+      <form method="post" action="{{ url_for('views.portal', module=module, edit=editing.id) if editing else url_for('views.portal', module=module) }}" class="homework-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% if editing %}<input type="hidden" name="record_id" value="{{ editing.id }}">{% endif %}
+        <label>{{ ('Recipient group' if module == 'bulk-sms' else 'Title')|translate(language) }}<input name="title" maxlength="160" value="{{ editing.title if editing else '' }}" required></label>
+        {% if module == 'appointments' %}<label>{{ 'Date and time'|translate(language) }}<input name="starts_at" type="datetime-local" value="{{ editing.starts_at if editing else '' }}" required></label>{% endif %}
+        <label>{{ ('SMS message draft' if module == 'bulk-sms' else 'Notes' if module == 'appointments' else 'Announcement' if module == 'bulletin' else 'Request details')|translate(language) }}<textarea name="description" rows="3" maxlength="4000">{{ (editing.notes if module == 'appointments' else editing.body) if editing else '' }}</textarea></label>
+        <button type="submit">{{ ('Save changes' if editing else 'Add to calendar') if module == 'appointments' else ('Save changes' if editing else 'Publish announcement') if module == 'bulletin' else 'Record request'|translate(language) }}</button>
+        {% if editing %}<a class="cancel-link" href="{{ url_for('views.portal', module=module) }}">{{ 'Cancel'|translate(language) }}</a>{% endif %}
+      </form>
+    </section>
+  {% endif %}
+  <section class="portal-card">{% if records %}<div class="event-list">{% for record in records %}<article class="event-item"><span class="event-date">{{ record.status if record.status is defined else record.starts_at[:10] }}</span><div class="request-content"><h2>{{ record.title }}</h2><p>{{ record.notes }}</p></div>
+    {% if record.status is defined and session.get('role') in ('super_admin','manager','admin') %}
+      <form method="post" action="{{ url_for('views.update_request_status', request_id=record.id) }}" class="request-status"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="module" value="{{ module }}"><select name="status" aria-label="{{ 'Request status'|translate(language) }}"><option {% if record.status == 'Open' %}selected{% endif %}>{{ 'Open'|translate(language) }}</option><option {% if record.status == 'In progress' %}selected{% endif %}>{{ 'In progress'|translate(language) }}</option><option {% if record.status == 'Complete' %}selected{% endif %}>{{ 'Complete'|translate(language) }}</option></select><button class="button-small secondary-button" type="submit">{{ 'Save'|translate(language) }}</button></form>
+      <form method="post" action="{{ url_for('views.delete_request', request_id=record.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="module" value="{{ module }}"><button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button></form>
+    {% endif %}
+    {% if module in ('appointments', 'bulletin') and session.get('role') in ('super_admin','manager','admin','teacher') and (module == 'bulletin' or session.get('role') != 'teacher') %}
+      <a class="text-link" href="{{ url_for('views.portal', module=module, edit=record.id) }}">{{ 'Edit'|translate(language) }}</a>
+      <form method="post" action="{{ url_for('views.delete_calendar_record', kind=module, record_id=record.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button></form>
+    {% endif %}
+  </article>{% endfor %}</div>{% else %}<div class="card-empty"><span>◌</span><p>{{ 'This workspace is ready. No records have been added yet.'|translate(language) }}</p></div>{% endif %}</section>
+{% endblock %}

@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+{% block title %}{{ 'School settings'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <style>
+    .settings-extra{margin-top:18px}
+    .class-management-list{display:grid;gap:8px}
+    .class-management-item{padding:12px;border:1px solid var(--line);border-radius:8px}
+    .class-management-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}
+    .class-management-heading h3,.class-management-heading p{margin:0}
+    .class-management-heading p{color:var(--muted);font-size:.72rem}
+    .settings-extra .settings-fields>h3{margin:20px 0 0}
+    .module-settings-list{display:grid}
+    .module-settings-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 0;border-bottom:1px solid var(--line)}
+    .module-settings-row form{margin:0}
+    .module-status{font-size:.76rem;font-weight:700}
+    .module-status.enabled{color:#16803c}
+    .module-status.disabled{color:#b42318}
+  </style>
+  <section class="page-title-row"><div><span class="eyebrow">SUPER ADMINISTRATION</span><h1>{{ 'School settings'|translate(language) }}</h1><p class="muted">{{ 'Manage portal branding, public landing content, language, and optional AI assistance.'|translate(language) }}</p></div></section>
+  <section class="portal-card settings-card">
+    <form method="post" enctype="multipart/form-data" class="settings-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="save_branding">
+      <div class="settings-section">
+        <div class="settings-section-title"><h2>{{ 'School identity'|translate(language) }}</h2><p>{{ 'Set the name and logo shown throughout the portal.'|translate(language) }}</p></div>
+        <div class="settings-fields">
+          <label for="school_name">{{ 'School name'|translate(language) }}</label><input id="school_name" name="school_name" maxlength="120" value="{{ values.get('school_name', school_name) }}" required>
+          <label for="logo">{{ 'School logo'|translate(language) }}</label>
+          {% if values.get('logo_filename') %}<img class="settings-logo-preview" src="{{ url_for('views.uploaded_logo', filename=values.get('logo_filename')) }}" alt="Current school logo">{% endif %}
+          <input id="logo" name="logo" type="file" accept="image/png,image/jpeg,image/gif,image/webp"><small>PNG, JPEG, GIF or WebP. Maximum file size: 1 MB.</small>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title"><h2>{{ 'Portal appearance'|translate(language) }}</h2><p>{{ 'Choose primary and login background colors, and the default portal language.'|translate(language) }}</p></div>
+        <div class="color-settings">
+          <label for="primary_color">{{ 'Primary theme color'|translate(language) }}<input id="primary_color" name="primary_color" type="color" value="{{ values.get('primary_color', '#1758a6') }}"></label>
+          <label for="login_background">{{ 'Login page background'|translate(language) }}<input id="login_background" name="login_background" type="color" value="{{ values.get('login_background', '#f1f5f9') }}"></label>
+          <label for="sidebar_color">{{ 'Sidebar color'|translate(language) }}<input id="sidebar_color" name="sidebar_color" type="color" value="{{ values.get('sidebar_color', '#123c73') }}"></label>
+          <label for="language">{{ 'Default language'|translate(language) }}<select id="language" name="language">{% for code, label in languages.items() %}<option value="{{ code }}" {% if values.get('language', 'en') == code %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title"><h2>{{ 'Public landing page'|translate(language) }}</h2><p>{{ 'Customize the public school welcome page content and hero image.'|translate(language) }}</p></div>
+        <div class="settings-fields">
+          <label for="landing_title">{{ 'Landing page title'|translate(language) }}</label><input id="landing_title" name="landing_title" maxlength="160" value="{{ values.get('landing_title', '') }}" required>
+          <label for="landing_text">{{ 'Welcome text'|translate(language) }}</label><textarea id="landing_text" name="landing_text" maxlength="2000" rows="4">{{ values.get('landing_text', '') }}</textarea>
+          <label for="index_welcome_text">{{ 'Dashboard welcome text'|translate(language) }}</label><input id="index_welcome_text" name="index_welcome_text" maxlength="255" value="{{ values.get('index_welcome_text', '') }}">
+          <label for="landing_image">{{ 'Landing page image'|translate(language) }}</label>
+          {% if values.get('landing_image_filename') %}<img class="settings-logo-preview" src="{{ url_for('views.uploaded_logo', filename=values.get('landing_image_filename')) }}" alt="Current landing-page image">{% endif %}
+          <input id="landing_image" name="landing_image" type="file" accept="image/png,image/jpeg,image/gif,image/webp"><small>PNG, JPEG, GIF or WebP. Maximum file size: 1 MB.</small>
+          <label for="hero_image">{{ 'Hero image'|translate(language) }}</label>
+          {% if values.get('hero_image_filename') %}<img class="settings-logo-preview" src="{{ url_for('views.uploaded_logo', filename=values.get('hero_image_filename')) }}" alt="Current hero image">{% endif %}
+          <input id="hero_image" name="hero_image" type="file" accept="image/png,image/jpeg,image/gif,image/webp"><small>PNG, JPEG, GIF or WebP. Maximum file size: 1 MB.</small>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title"><h2>{{ 'AI writing assistance'|translate(language) }}</h2><p>Optional OpenAI-compatible endpoint configured by the server administrator. Only public landing-page copy is sent; student data is never included.</p></div>
+        <label class="checkbox-row"><input type="checkbox" name="ai_enabled" value="1" {% if values.get('ai_enabled') == '1' %}checked{% endif %}> {{ 'Enable AI landing-page suggestions'|translate(language) }}</label>
+        <p class="muted">{% if config.AI_API_KEY %}AI API key is configured on the server.{% else %}Set AI_API_KEY on the server to activate suggestions.{% endif %}</p>
+        <button type="button" class="secondary-button" id="ai-suggest" {% if values.get('ai_enabled') != '1' or not config.AI_API_KEY %}disabled{% endif %}>{{ 'Suggest improved landing copy'|translate(language) }}</button>
+        <p id="ai-message" class="muted" role="status"></p>
+      </div>
+      <div class="settings-actions"><button type="submit">{{ 'Save settings'|translate(language) }}</button></div>
+    </form>
+  </section>
+  <section class="portal-card settings-card settings-extra">
+    <div class="settings-section">
+      <div class="settings-section-title"><h2>{{ 'Navigation menu'|translate(language) }}</h2><p>{{ 'Add, order, hide, or remove sidebar links. Destinations are restricted to supported portal pages.'|translate(language) }}</p></div>
+      <div class="settings-fields">
+        <form method="post" class="stack">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="add_navigation_item">
+          <label for="navigation-title">{{ 'Menu title'|translate(language) }}</label><input id="navigation-title" name="title" maxlength="100" required>
+          <label for="navigation-category">{{ 'Menu category'|translate(language) }}</label><input id="navigation-category" name="category" maxlength="100" required>
+          <label for="navigation-icon">{{ 'Icon text'|translate(language) }}</label><input id="navigation-icon" name="icon" maxlength="50" value="circle" required>
+          <label for="navigation-target">{{ 'Destination'|translate(language) }}</label>
+          <select id="navigation-target" name="target" required>
+            {% for target_key, target in navigation_targets.items() %}
+              <option value="{{ target_key }}">{{ target.category }} · {{ target.title }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit">{{ 'Add navigation item'|translate(language) }}</button>
+        </form>
+        <h3>{{ 'Current menu items'|translate(language) }}</h3>
+        <div class="class-management-list">
+          {% for item in navigation_items %}
+            <article class="class-management-item">
+              <div class="class-management-heading">
+                <div><h3>{{ item.title }} <small>({{ item.category }})</small></h3><p>{{ 'Active'|translate(language) if item.is_active else 'Hidden'|translate(language) }} · {{ item.url_endpoint }}</p></div>
+                <div class="module-settings-list">
+                  <form method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="action" value="update_navigation_order">
+                    <input type="hidden" name="item_id" value="{{ item.id }}">
+                    <label>{{ 'Order'|translate(language) }} <input type="number" name="display_order" min="0" max="9999" value="{{ item.display_order }}" required></label>
+                    <button class="button-small secondary-button" type="submit">{{ 'Save order'|translate(language) }}</button>
+                  </form>
+                  <form method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="action" value="toggle_navigation_item">
+                    <input type="hidden" name="item_id" value="{{ item.id }}">
+                    <button class="button-small secondary-button" type="submit">{{ 'Toggle status'|translate(language) }}</button>
+                  </form>
+                  <form method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="action" value="delete_navigation_item">
+                    <input type="hidden" name="item_id" value="{{ item.id }}">
+                    <button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button>
+                  </form>
+                </div>
+              </div>
+            </article>
+          {% else %}
+            <div class="card-empty"><p>{{ 'No navigation items configured.'|translate(language) }}</p></div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </section>
+  <section class="portal-card settings-card settings-extra">
+    <div class="settings-section">
+      <div class="settings-section-title"><h2>{{ 'Optional modules'|translate(language) }}</h2><p>{{ 'Enable or disable optional school portal modules.'|translate(language) }}</p></div>
+      <div class="module-settings-list">
+        {% for module, label in [('attendance','Attendance'),('summer_school','Summer School'),('teachers','Teachers'),('boarding','Boarding')] %}
+          <div class="module-settings-row">
+            <span><strong>{{ label|translate(language) }}</strong> ·
+              <span class="module-status {{ 'enabled' if modules[module] else 'disabled' }}">
+                {{ 'Active'|translate(language) if modules[module] else 'Hidden'|translate(language) }}
+              </span>
+            </span>
+            <form method="post">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="action" value="toggle_module">
+              <input type="hidden" name="module_name" value="{{ module }}">
+              <button class="button-small secondary-button" type="submit">{{ 'Toggle status'|translate(language) }}</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title"><h2>{{ 'Dashboard layout'|translate(language) }}</h2><p>{{ 'Choose how the dashboard is arranged.'|translate(language) }}</p></div>
+      <form method="post" class="settings-fields">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="update_layout">
+        <label for="index_layout">{{ 'Home page layout'|translate(language) }}</label>
+        <select id="index_layout" name="index_layout">
+          {% for layout, label in layouts.items() %}
+            <option value="{{ layout }}" {% if index_layout == layout %}selected{% endif %}>{{ label|translate(language) }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit">{{ 'Save dashboard layout'|translate(language) }}</button>
+      </form>
+    </div>
+  </section>
+  <section class="portal-card settings-card settings-extra">
+    <div class="settings-section">
+      <div class="settings-section-title"><h2>{{ 'Class management'|translate(language) }}</h2><p>{{ 'Create classes, assign teachers, and remove classes without linked records.'|translate(language) }}</p></div>
+      <div class="settings-fields">
+        {% if teachers %}
+          <form method="post" action="{{ url_for('views.manage_classes') }}" class="stack">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="add">
+            <label for="settings-class-name">{{ 'Class name'|translate(language) }}</label>
+            <input id="settings-class-name" name="name" maxlength="120" required>
+            <label for="settings-class-code">{{ 'Class code'|translate(language) }}</label>
+            <input id="settings-class-code" name="code" maxlength="40" required>
+            <label for="settings-class-teacher">{{ 'Assigned teacher'|translate(language) }}</label>
+            <select id="settings-class-teacher" name="teacher_id" required>
+              <option value="">{{ 'Choose a teacher'|translate(language) }}</option>
+              {% for teacher in teachers %}
+                <option value="{{ teacher.id }}">{{ teacher.name }}{% if teacher.subject %} · {{ teacher.subject }}{% endif %}</option>
+              {% endfor %}
+            </select>
+            <button type="submit">{{ 'Add class'|translate(language) }}</button>
+          </form>
+        {% else %}
+          <div class="card-empty"><p>{{ 'Add a teacher profile before creating a class.'|translate(language) }}</p></div>
+        {% endif %}
+        <h3>{{ 'Classes'|translate(language) }}</h3>
+        {% if classes %}
+          <div class="class-management-list">
+            {% for course in classes %}
+              <article class="class-management-item">
+                <div class="class-management-heading">
+                  <div><h3>{{ course.name }} <small>{{ course.code }}</small></h3><p>{{ 'Assigned teacher'|translate(language) }}: {{ course.teacher_name }}</p></div>
+                  <form method="post" action="{{ url_for('views.manage_classes') }}" onsubmit="return confirm('{{ 'Delete this class? Classes with linked records cannot be deleted.'|translate(language) }}');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="action" value="delete">
+                    <input type="hidden" name="course_id" value="{{ course.id }}">
+                    <button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button>
+                  </form>
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="card-empty"><p>{{ 'No classes yet'|translate(language) }}</p></div>
+        {% endif %}
+        <a class="button-small secondary-button" href="{{ url_for('views.manage_classes') }}">{{ 'Open full class management'|translate(language) }}</a>
+      </div>
+    </div>
+  </section>
+  <script>
+    document.getElementById('ai-suggest')?.addEventListener('click', async () => {
+      const button = document.getElementById('ai-suggest');
+      const message = document.getElementById('ai-message');
+      button.disabled = true;
+      message.textContent = 'Generating a suggestion…';
+      try {
+        const response = await fetch('{{ url_for("views.ai_suggest_landing_copy") }}', {
+          method: 'POST',
+          headers: {'X-CSRFToken': '{{ csrf_token() }}'}
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'AI suggestion failed.');
+        document.getElementById('landing_title').value = result.title;
+        document.getElementById('landing_text').value = result.text;
+        message.textContent = 'Suggestion added to the form. Save settings to publish it.';
+      } catch (error) {
+        message.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+{% endblock %}

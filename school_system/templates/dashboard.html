@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Dashboard'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <style>
+    .metric-grid.dashboard-classic{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .dashboard-grid.dashboard-classic{grid-template-columns:1fr}
+    .metric-grid.dashboard-minimal{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+    .dashboard-minimal .portal-card,.dashboard-minimal .metric-card{border-color:transparent;box-shadow:none}
+    .dashboard-minimal .portal-card{background:#f9fafc}
+    .dashboard-minimal .metric-card{min-height:100px;background:#edf3fb}
+    @media(max-width:640px){.metric-grid.dashboard-classic,.metric-grid.dashboard-minimal{grid-template-columns:1fr}}
+  </style>
+  <section class="welcome-row"><div><span class="eyebrow">SCHOOL PORTAL</span><h1>{{ greeting|translate(language) }}, {{ greeting_name or user.username }} <span aria-hidden="true">✦</span></h1><p class="muted">{{ site_settings.index_welcome_text or "Here’s what’s happening across your school today." }}</p></div><div class="today-date">{{ current_date }}</div></section>
+  {% if counts %}
+    <section class="metric-grid{% if index_layout == 'classic_list' %} dashboard-classic{% elif index_layout == 'minimal_dashboard' %} dashboard-minimal{% endif %}" aria-label="School overview">
+      {% for label, count in counts.items() %}
+        <a class="metric-card" href="{{ url_for('views.manage', resource={'Students':'students','Teachers':'teachers','Classes':'courses','Enrollments':'enrollments','Exam results':'grades','Attendance records':'attendance','My classes':'courses','My students':'students'}.get(label, 'students')) }}">
+          <span class="metric-label">{{ label|translate(language) }}</span><strong>{{ count }}</strong><span class="metric-note">View records <span aria-hidden="true">↗</span></span>
+        </a>
+      {% endfor %}
+    </section>
+  {% endif %}
+  <section class="dashboard-grid{% if index_layout == 'classic_list' %} dashboard-classic{% elif index_layout == 'minimal_dashboard' %} dashboard-minimal{% endif %}">
+    <article class="portal-card user-info-card">
+      <div class="card-heading"><div><span class="card-icon lavender">◉</span><div><h2>{{ 'User information'|translate(language) }}</h2><p>{{ 'Your account overview'|translate(language) }}</p></div></div><a href="{{ url_for('views.profile') }}" class="text-link">{{ 'Profile'|translate(language) }} ↗</a></div>
+      <div class="user-summary">{% if user.teacher_picture %}<img class="avatar avatar-large profile-thumb" src="{{ url_for('views.profile_image', filename=user.teacher_picture) }}" alt="Teacher profile picture">{% else %}<span class="avatar avatar-large">{{ (user.teacher_name or user.username)[:1]|upper }}</span>{% endif %}<div><strong>{{ greeting_name or user.username }}</strong><span>{{ user.email or 'School portal account' }}</span></div></div>
+      <dl class="info-list"><div><dt>{{ 'Access role'|translate(language) }}</dt><dd>{{ role_label }}</dd></div><div><dt>{{ 'Portal version'|translate(language) }}</dt><dd>2.0</dd></div><div><dt>{{ 'Academic year'|translate(language) }}</dt><dd>{{ request.args.get('year', academic_year) }}</dd></div></dl>
+    </article>
+    <article class="portal-card announcements-card">
+      <div class="card-heading"><div><span class="card-icon gold">✳</span><div><h2>{{ 'Weekly announcements'|translate(language) }}</h2><p>{{ 'News from your school'|translate(language) }}</p></div></div>{% if role_label in ['Super Admin', 'Manager', 'Admin', 'Teacher'] %}<a href="{{ url_for('views.portal', module='bulletin') }}" class="text-link">View all ↗</a>{% endif %}</div>
+      {% if announcements %}<div class="announcement-list">{% for item in announcements %}<article class="announcement-item"><span class="announcement-dot"></span><div><h3>{{ item.title }}</h3><p>{{ item.body }}</p></div></article>{% endfor %}</div>
+      {% else %}<div class="card-empty"><span>✳</span><p>No announcements have been posted yet.</p></div>{% endif %}
+    </article>
+    <article class="portal-card appointments-card">
+      <div class="card-heading"><div><span class="card-icon mint">▦</span><div><h2>{{ 'Appointments & calendar'|translate(language) }}</h2><p>{{ 'Upcoming school events'|translate(language) }}</p></div></div>{% if role_label in ['Super Admin', 'Manager', 'Admin'] %}<a href="{{ url_for('views.portal', module='appointments') }}" class="text-link">Calendar ↗</a>{% endif %}</div>
+      {% if appointments %}<div class="event-list">{% for event in appointments %}<div class="event-item"><span class="event-date">{{ event.starts_at[:10] }}</span><div><h3>{{ event.title }}</h3><p>{{ event.starts_at[11:16] }}{% if event.notes %} · {{ event.notes }}{% endif %}</p></div></div>{% endfor %}</div>
+      {% else %}<div class="card-empty"><span>▦</span><p>Nothing scheduled for today. Enjoy the clear calendar.</p></div>{% endif %}
+    </article>
+    {% if user.role == 'teacher' %}
+      <article class="portal-card class-card"><div class="card-heading"><div><span class="card-icon blue">▤</span><div><h2>My classes</h2><p>Classes assigned to your account</p></div></div></div>
+        {% if teacher_courses %}<div class="class-list">{% for course in teacher_courses %}<div class="class-row"><span>{{ course.name }}</span><b>{{ course.code }}</b></div>{% endfor %}</div>{% else %}<p class="muted">No classes have been assigned to your teacher account.</p>{% endif %}
+      </article>
+    {% else %}
+      <article class="portal-card shortcuts-card"><div class="card-heading"><div><span class="card-icon blue">⌘</span><div><h2>Quick access</h2><p>Your school tools</p></div></div></div>
+        <div class="shortcut-list">
+          {% if user.role in ('super_admin','admin','manager') %}<a href="{{ url_for('views.manage', resource='students') }}">Student information <span>→</span></a>{% endif %}
+          {% if user.role == 'super_admin' %}<a href="{{ url_for('views.users') }}">Manage portal users <span>→</span></a><a href="{{ url_for('views.settings') }}">School branding & settings <span>→</span></a>{% endif %}
+          {% if user.role in ('manager','admin','super_admin') %}<a href="{{ url_for('views.manage', resource='grades') }}">Performance reports <span>→</span></a>{% endif %}
+        </div>
+      </article>
+    {% endif %}
+  </section>
+{% endblock %}

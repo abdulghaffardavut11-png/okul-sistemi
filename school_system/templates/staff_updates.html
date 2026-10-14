@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Staff updates & logs'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row">
+    <div><span class="eyebrow">{{ 'STAFF ONLY'|translate(language) }}</span><h1>{{ 'Staff updates & logs'|translate(language) }}</h1>
+      <p class="muted">{{ 'Internal newsletters, student logs, meeting schedules and staff updates. Visible only to school staff.'|translate(language) }}</p></div>
+  </section>
+  <section class="portal-card staff-update-form-card">
+    <h2>{{ 'Edit staff update'|translate(language) if editing else 'Post staff update'|translate(language) }}</h2>
+    <form method="post" class="staff-update-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if editing %}<input type="hidden" name="update_id" value="{{ editing.id }}">{% endif %}
+      <label>{{ 'Update type'|translate(language) }}<select name="category" id="update-category" required>
+        {% for value,label in [('newsletter','Staff newsletter'),('student_log','Internal student log'),('meeting','Meeting'),('update','Staff update')] %}
+          <option value="{{ value }}" {% if editing and editing.category == value %}selected{% endif %}>{{ label|translate(language) }}</option>
+        {% endfor %}
+      </select></label>
+      <label>{{ 'Title'|translate(language) }}<input name="title" maxlength="160" value="{{ editing.title if editing else '' }}" required></label>
+      <label class="student-log-field">{{ 'Student'|translate(language) }}<select name="student_id" id="update-student">
+        <option value="">{{ 'Choose a student'|translate(language) }}</option>
+        {% for student in students %}<option value="{{ student.id }}" {% if editing and editing.student_id == student.id %}selected{% endif %}>{{ student.name }} · {{ student.grade_level }}</option>{% endfor %}
+      </select></label>
+      <label class="meeting-field">{{ 'Meeting date and time'|translate(language) }}<input type="datetime-local" name="scheduled_at" value="{{ editing.scheduled_at if editing and editing.scheduled_at else '' }}"></label>
+      <label class="wide">{{ 'Details'|translate(language) }}<textarea name="body" rows="4" maxlength="4000">{{ editing.body if editing else '' }}</textarea></label>
+      <button type="submit">{{ 'Save changes'|translate(language) if editing else 'Publish to staff'|translate(language) }}</button>
+      {% if editing %}<a class="cancel-link" href="{{ url_for('views.staff_updates') }}">{{ 'Cancel'|translate(language) }}</a>{% endif %}
+    </form>
+  </section>
+  <section class="staff-update-list">
+    {% for item in updates %}
+      <article class="portal-card staff-update-item">
+        <div class="staff-update-heading"><div><span class="update-category">{{ item.category|replace('_',' ')|title|translate(language) }}</span>
+          <h2>{{ item.title }}</h2>{% if item.student_name %}<p class="muted">{{ 'Student'|translate(language) }}: {{ item.student_name }}</p>{% endif %}
+          {% if item.scheduled_at %}<p class="muted">{{ 'Meeting date and time'|translate(language) }}: {{ item.scheduled_at|replace('T',' ') }}</p>{% endif %}
+        </div><small>{{ item.creator_name or 'Staff' }} · {{ item.created_at }}</small></div>
+        {% if item.body %}<p class="staff-update-body">{{ item.body }}</p>{% endif %}
+        {% if session.get('role') != 'teacher' or item.created_by == session.get('user_id') %}
+          <div class="homework-actions">
+            <a href="{{ url_for('views.staff_updates', edit=item.id) }}">{{ 'Edit'|translate(language) }}</a>
+            <form method="post" action="{{ url_for('views.delete_staff_update', update_id=item.id) }}" onsubmit="return confirm('{{ 'Delete this staff update?'|translate(language) }}');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="danger-link" type="submit">{{ 'Delete'|translate(language) }}</button>
+            </form>
+          </div>
+        {% endif %}
+      </article>
+    {% else %}<article class="portal-card card-empty"><p>{{ 'No staff updates have been posted.'|translate(language) }}</p></article>{% endfor %}
+  </section>
+  <script>
+    (() => {
+      const category = document.getElementById('update-category');
+      const student = document.getElementById('update-student');
+      const meeting = document.querySelector('.meeting-field');
+      const log = document.querySelector('.student-log-field');
+      const scheduled = meeting.querySelector('input');
+      const updateFields = () => {
+        const isLog = category.value === 'student_log';
+        const isMeeting = category.value === 'meeting';
+        log.hidden = !isLog;
+        meeting.hidden = !isMeeting;
+        student.required = isLog;
+        scheduled.required = isMeeting;
+      };
+      category.addEventListener('change', updateFields);
+      updateFields();
+    })();
+  </script>
+{% endblock %}

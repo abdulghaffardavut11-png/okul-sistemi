@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ definition.title|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <div class="page-heading">
+    <div><h1>{{ definition.title|translate(language) }}</h1><p class="muted">{{ 'Manage school records and review details.'|translate(language) }}</p></div>
+    <div class="heading-actions">
+      {% if resource == 'students' and session.get('role') in ('super_admin','manager','admin') %}
+        <a class="button-small secondary-button" href="{{ url_for('views.export_students', academic_year=request.args.get('year', academic_year)) }}">{{ 'Export CSV'|translate(language) }}</a>
+      {% endif %}
+      <span class="badge">{{ records|length }} records</span>
+    </div>
+  </div>
+  <div class="layout">
+    <section class="card form-card">
+      <h2>{{ ('Edit ' ~ definition.singular if editing else 'Add ' ~ definition.singular)|translate(language) if editable else 'Records overview'|translate(language) }}</h2>
+      {% if not editing and resource in ('courses', 'enrollments', 'grades', 'attendance') %}
+        {% set has_choices = form_fields|selectattr('kind', 'equalto', 'select')|map(attribute='choices')|map('length')|sum %}
+        {% if has_choices == 0 %}<p class="muted">Add the required related records first.</p>{% endif %}
+      {% endif %}
+      {% if teacher_student_view %}
+        <p class="muted privacy-notice">For parent or guardian contact requests, please contact Administration.</p>
+      {% endif %}
+      <form method="post" class="stack" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% for field in form_fields if editable %}
+          <label for="{{ field.name }}">{{ field.label|translate(language) }}</label>
+          {% if field.kind == 'select' %}
+            <select id="{{ field.name }}" name="{{ field.name }}" required>
+              <option value="">Choose…</option>
+              {% for option in field.choices %}
+                <option value="{{ option.id }}" {% if field.value|string == option.id|string %}selected{% endif %}>{{ option.name }}</option>
+              {% endfor %}
+            </select>
+          {% elif field.kind == 'textarea' %}
+            <textarea id="{{ field.name }}" name="{{ field.name }}" rows="3" {% if field.required %}required{% endif %}>{{ field.value }}</textarea>
+          {% elif field.kind == 'file' %}
+            {% if field.value %}<img class="settings-logo-preview" src="{{ url_for('views.profile_image', filename=field.value) }}" alt="Current profile picture">{% endif %}
+            <input id="{{ field.name }}" name="{{ field.name }}" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
+          {% else %}
+            <input id="{{ field.name }}" name="{{ field.name }}" type="{{ field.kind }}"
+              value="{{ field.value }}" {% if field.required %}required{% endif %}
+              {% if field.name == 'score' %}min="0" max="100" step="0.01"{% endif %}
+              {% if field.name == 'academic_year' %}min="2000" step="1"{% endif %}>
+          {% endif %}
+        {% endfor %}
+        {% if editable %}<button type="submit">{{ 'Save changes'|translate(language) if editing else ('Add ' ~ definition.singular)|translate(language) }}</button>{% endif %}
+        {% if editing %}<a class="cancel-link" href="{{ url_for('views.manage', resource=resource) }}">Cancel</a>{% endif %}
+      </form>
+    </section>
+    <section class="card table-card">
+      {% if records %}
+        <div class="table-scroll"><table>
+          <thead><tr>{% for key, label in definition.columns %}<th>{{ label|translate(language) }}</th>{% endfor %}{% if editable or session.get('role') in ('super_admin','manager','admin','teacher') and resource in ('grades','attendance') %}<th>{{ 'Actions'|translate(language) }}</th>{% endif %}</tr></thead>
+          <tbody>
+            {% for record in records %}
+              <tr>
+                {% for key, label in definition.columns %}<td>
+                  {% if key == 'profile_picture' and record[key] %}
+                    <img class="profile-thumb" src="{{ url_for('views.profile_image', filename=record[key]) }}" alt="{{ record['name'] }} profile">
+                  {% else %}{{ record[key] }}{% endif %}
+                </td>{% endfor %}
+                {% if editable or session.get('role') in ('super_admin','manager','admin','teacher') and resource in ('grades','attendance') %}
+                  <td class="actions">
+                    {% if resource == 'students' and session.get('role') in ('super_admin','manager','admin') %}
+                      <a href="{{ url_for('views.export_student_report', student_id=record.id) }}">{{ 'Export report'|translate(language) }}</a>
+                    {% endif %}
+                    {% if editable %}<a href="{{ url_for('views.manage', resource=resource, edit=record.id) }}">{{ 'Edit'|translate(language) }}</a>{% endif %}
+                    {% if session.get('role') in ('super_admin','manager','admin') or session.get('role') == 'teacher' and resource in ('grades','attendance') %}
+                      <form method="post" action="{{ url_for('views.delete_record', resource=resource, record_id=record.id) }}"
+                        onsubmit="return confirm('Delete this {{ definition.singular }}? Related records may also be removed.');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="danger-link" type="submit">{{ 'Delete'|translate(language) }}</button>
+                      </form>
+                    {% endif %}
+                  </td>
+                {% endif %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table></div>
+      {% else %}
+        <div class="empty"><h2>{{ ('No ' ~ definition.title|lower ~ ' yet')|translate(language) }}</h2><p>{{ 'Add a record using the form to get started.'|translate(language) }}</p></div>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}

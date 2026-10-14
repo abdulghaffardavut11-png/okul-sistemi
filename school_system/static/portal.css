@@ -1,0 +1,50 @@
+.sidebar-logout{width:100%;min-height:34px;justify-content:flex-start;margin-top:12px;padding:6px 0;background:transparent;color:#dce9f7;font-size:.76rem}
+.sidebar-logout:hover{background:transparent;color:#fff;text-decoration:underline}
+.homework-actions{display:flex;gap:14px;align-items:center;margin-top:12px;padding-top:10px;border-top:1px solid #edf0f4}
+.homework-actions a{color:var(--primary);font-size:.72rem;font-weight:700}
+.homework-actions form{margin:0}
+.request-content{min-width:0;flex:1}
+.request-status{display:flex;align-items:center;gap:5px}
+.request-status select,.role-edit-form select{min-height:30px;max-width:150px;padding:4px 7px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);font-size:.68rem}
+.danger-button{background:#fff0ef;color:#a52017}
+.role-edit-form{display:grid;min-width:135px;gap:4px}
+.role-edit-form button{justify-self:start}
+.homework-actions .danger-link{min-height:0;padding:0;background:transparent;color:#b42318;font-size:.72rem}
+.public-body{min-height:100vh;background:#f5f7fb}
+.public-page{width:min(1120px,100%);min-height:100vh;margin:0 auto;padding:0 28px}
+.public-header{display:flex;min-height:88px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}
+.public-brand{display:flex;align-items:center;gap:11px;font-weight:800}
+.public-brand img,.public-brand .logo-mark{width:40px;height:40px;object-fit:contain;border-radius:11px}
+.public-brand img{background:#fff}
+.public-login-link,.public-cta{display:inline-flex;align-items:center;gap:12px;color:var(--primary);font-size:.82rem;font-weight:700}
+.public-hero{padding:clamp(75px,13vh,145px) 0 78px}
+.public-hero h1{margin:13px 0 20px;font-size:clamp(2.8rem,7vw,5.6rem);line-height:1.07;letter-spacing:-.065em}
+.public-hero>p{max-width:580px;margin-bottom:27px;color:#758397;font-size:1.02rem;line-height:1.8}
+.public-cta{min-height:46px;padding:0 17px;border-radius:8px;background:var(--primary);color:white}
+.public-cta:hover{filter:brightness(.92)}
+.public-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;padding-bottom:66px}
+.public-values article{padding:23px;border:1px solid var(--line);border-radius:12px;background:#fff}
+.public-values article>span{color:var(--primary);font-size:.72rem;font-weight:800}
+.public-values h2{margin:12px 0 7px}
+.public-values p{margin:0;color:#7f8da1;font-size:.78rem}
+.public-footer{padding:20px 0;border-top:1px solid var(--line);color:#8995a3;font-size:.73rem}
+.public-footer span{padding:0 6px}.public-footer a{color:var(--primary)}
+.language-select select{min-height:34px;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--ink);font-size:.72rem;font-weight:700}
+.profile-thumb{width:38px;height:38px;border-radius:50%;object-fit:cover;vertical-align:middle}
+.summer-form-card,.summer-records-card{margin-bottom:20px;padding:24px}
+.summer-form,.summer-search{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:end}
+.summer-form label,.summer-search label{display:grid;gap:6px;color:#536479;font-size:.76rem;font-weight:700}
+.summer-form input,.summer-form select,.summer-form textarea,.summer-search input,.summer-search select{width:100%;min-height:40px;padding:8px 10px;border:1px solid #dce2ea;border-radius:8px;background:#fff;color:var(--ink);font:inherit}
+.summer-form .wide{grid-column:1/-1}
+.summer-form button,.summer-search button{justify-self:start;min-height:39px}
+.summer-search{grid-template-columns:minmax(0,1fr) minmax(150px,.35fr) auto;margin-bottom:18px}
+.secondary-button{min-height:32px;padding:6px 10px;background:#eaf1fa;color:var(--primary);font-size:.72rem}
+.summer-records-card table{font-size:.72rem}
+.summer-records-card td{max-width:220px;overflow-wrap:anywhere}
+.settings-fields textarea,.stack textarea{width:100%;min-height:78px;padding:9px 11px;border:1px solid #dce2ea;border-radius:8px;background:#fff;color:var(--ink);font:inherit}
+.checkbox-row{display:flex;gap:8px;align-items:center;margin:12px 0;font-size:.8rem}
+.checkbox-row input{width:17px;height:17px}
+.public-hero-image{display:block;max-width:min(100%,760px);max-height:420px;margin:20px 0;border-radius:18px;object-fit:cover}
+[hidden]{display:none!important}
+@media(max-width:600px){.public-page{padding:0 18px}.public-header{min-height:70px}.public-brand{max-width:65%;font-size:.78rem}.public-values{grid-template-columns:1fr}.public-hero{padding:80px 0 55px}}
+@media(max-width:700px){.summer-form,.summer-search{grid-template-columns:1fr}.summer-form .wide{grid-column:auto}.summer-records-card{padding:15px}.summer-search{align-items:stretch}}

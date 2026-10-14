@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="{% block robots_meta %}noindex, nofollow{% endblock %}">
+    <meta name="description" content="{% block description %}{{ school_name }} secure school portal for students, parents, teachers and school administrators.{% endblock %}">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="{% block og_title %}{{ self.title() }}{% endblock %}">
+    <meta property="og:description" content="{{ school_name }} school management portal.">
+    <meta property="og:site_name" content="{{ school_name }}">
+    {% block canonical %}{% endblock %}
+    {% if brand_settings.get('logo_filename') %}<meta property="og:image" content="{{ site_url }}{{ url_for('views.uploaded_logo', filename=brand_settings.get('logo_filename')) }}">{% endif %}
+    <title>{% block title %}{{ school_name }}{% endblock %}</title>
+    <link rel="icon" href="{% if brand_settings.get('logo_filename') %}{{ url_for('views.uploaded_logo', filename=brand_settings.get('logo_filename')) }}{% else %}{{ url_for('static', filename='favicon.svg') }}{% endif %}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='portal.css') }}">
+    <style>
+      :root { --primary: {{ brand_settings.get('primary_color', '#1758a6') }}; --login-bg: {{ brand_settings.get('login_background', '#f1f5f9') }}; }
+    </style>
+  </head>
+  <body class="{% block body_class %}portal-body{% endblock %}">
+    {% if session.get('user_id') and not public_page|default(false) %}
+      <div class="portal-shell" id="portal-shell">
+        <aside class="sidebar" id="sidebar" style="background-color: {{ site_settings.sidebar_color }};">
+          <a class="school-brand" href="{{ url_for('views.dashboard') }}">
+            <span class="school-logo">
+              {% if brand_settings.get('logo_filename') %}
+                <img src="{{ url_for('views.uploaded_logo', filename=brand_settings.get('logo_filename')) }}" alt="{{ school_name }} logo">
+              {% else %}<span class="logo-mark">W</span>{% endif %}
+            </span>
+            <span class="school-name">{{ school_name }}</span>
+          </a>
+          <div class="sidebar-scroll">
+            {% set nav_state = namespace(category=None) %}
+            {% for item in nav_items %}
+              {% if item.category != nav_state.category %}
+                {% if not loop.first %}</section>{% endif %}
+                <section class="nav-group"><p class="nav-heading">{{ item.category }}</p>
+                {% set nav_state.category = item.category %}
+              {% endif %}
+              <a class="nav-link {% if request.endpoint == item.url_endpoint and (not item.get('resource') or request.view_args.get('resource') == item.get('resource')) %}active{% endif %}"
+                href="{{ url_for(item.url_endpoint, resource=item.resource) if item.get('resource') else url_for(item.url_endpoint, module=item.module) if item.get('module') else url_for(item.url_endpoint) }}">
+                <span class="nav-icon" aria-hidden="true">{{ item.icon[:1]|upper }}</span><span>{{ item.title }}</span>
+              </a>
+            {% endfor %}
+            {% if nav_items %}</section>{% endif %}
+          </div>
+          <div class="sidebar-footer">
+            <span class="sidebar-version">School Portal <b>v2.0</b></span>
+            <form action="{{ url_for('auth.logout') }}" method="post">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="sidebar-logout" type="submit">{{ 'Sign out'|translate(language) }}</button>
+            </form>
+          </div>
+        </aside>
+        <div class="portal-main">
+          <header class="topbar">
+            <button class="icon-button menu-toggle" id="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="true">☰</button>
+            <div class="topbar-spacer"></div>
+            <form class="language-select" method="post" action="{{ url_for('views.change_language') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <label for="portal-language" class="sr-only">Language</label>
+              <select id="portal-language" name="language" aria-label="Language" onchange="this.form.submit()">
+                {% for code, label in languages.items() %}
+                  <option value="{{ code }}" {% if language == code %}selected{% endif %}>{{ code|upper }}</option>
+                {% endfor %}
+              </select>
+            </form>
+            <form class="year-select" method="get" action="{{ url_for('views.dashboard') }}">
+              <label for="academic-year">{{ 'Academic year'|translate(language) }}</label>
+              <select id="academic-year" name="year" onchange="this.form.submit()">
+                {% set year = request.args.get('year', academic_year) %}
+                {% for option in academic_year_options %}
+                  <option value="{{ option }}" {% if year == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+              </select>
+            </form>
+            <a class="profile-chip" href="{{ url_for('views.profile') }}" aria-label="User profile">
+              <span class="avatar">{{ session.get('username', 'U')[:1]|upper }}</span>
+              <span class="profile-copy"><b>{{ session.get('username') }}</b><small>{{ role_label }}</small></span>
+            </a>
+          </header>
+          <main class="page-content">
+            {% for category, message in get_flashed_messages(with_categories=true) %}
+              <p class="flash {{ category }}" role="status">{{ message }}</p>
+            {% endfor %}
+            {% block content %}{% endblock %}
+          </main>
+          <footer class="page-footer">{{ school_name }} <span>·</span> Secure School Portal</footer>
+        </div>
+      </div>
+      <script src="{{ url_for('static', filename='portal.js') }}" defer></script>
+    {% else %}
+      {% for category, message in get_flashed_messages(with_categories=true) %}
+        <p class="flash {{ category }} login-flash" role="status">{{ message }}</p>
+      {% endfor %}
+      {% block public_content %}{% endblock %}
+    {% endif %}
+  </body>
+</html>

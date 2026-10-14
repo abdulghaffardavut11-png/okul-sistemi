@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Academic year settings'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row">
+    <div>
+      <span class="eyebrow">{{ 'SUPER ADMINISTRATION'|translate(language) }}</span>
+      <h1>{{ 'Academic year settings'|translate(language) }}</h1>
+      <p class="muted">{{ 'Set the academic year used for school reporting and performance forecasts.'|translate(language) }}</p>
+    </div>
+  </section>
+  <section class="portal-card settings-card">
+    <form method="post" class="settings-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="academic_year">{{ 'Current academic year'|translate(language) }}</label>
+      <input id="academic_year" name="academic_year" value="{{ academic_year }}" pattern="[0-9]{4}-[0-9]{4}" maxlength="9" required>
+      <small>{{ 'Use consecutive years, for example 2026-2027.'|translate(language) }}</small>
+      <div class="settings-actions"><button type="submit">{{ 'Save academic year'|translate(language) }}</button></div>
+    </form>
+  </section>
+{% endblock %}

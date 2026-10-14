@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}{{ 'My profile'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row"><div><span class="eyebrow">{{ 'User Account'|translate(language) }}</span><h1>{{ 'My profile'|translate(language) }}</h1><p class="muted">{{ 'Your signed-in school portal identity.'|translate(language) }}</p></div></section>
+  <section class="portal-card profile-card"><span class="avatar avatar-large">{{ user.username[:1]|upper }}</span><div><h2>{{ user.username }}</h2><p>{{ user.email or 'No email address linked'|translate(language) }}</p><span class="role-pill">{{ role_labels[user.role]|translate(language) }}</span></div></section>
+{% endblock %}

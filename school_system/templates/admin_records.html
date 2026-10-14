@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% set is_meeting = module == 'parent-meetings' %}
+{% block title %}{{ ('Parent Meeting Logs' if is_meeting else 'Health & Incident Reports')|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row">
+    <div>
+      <span class="eyebrow">{{ 'RESTRICTED ADMINISTRATION'|translate(language) }}</span>
+      <h1>{{ ('Parent Meeting Logs' if is_meeting else 'Health & Incident Reports')|translate(language) }}</h1>
+      <p class="muted">{{ ('Private parent-meeting notes. Access is limited to Super Admins, Managers and Admins.' if is_meeting else 'Confidential health and incident records. Access is limited to Super Admins, Managers and Admins.')|translate(language) }}</p>
+    </div>
+  </section>
+  <div class="admin-grid">
+    <section class="portal-card user-form-card">
+      <div class="card-heading"><div><span class="card-icon lavender">＋</span><div><h2>{{ ('Edit meeting record' if editing else 'Record parent meeting') if is_meeting else ('Edit report' if editing else 'Record health or incident report')|translate(language) }}</h2></div></div></div>
+      <form method="post" class="stack user-create-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% if editing %}<input type="hidden" name="{{ 'meeting_id' if is_meeting else 'report_id' }}" value="{{ editing.id }}">{% endif %}
+        <label for="student-id">{{ 'Student'|translate(language) }}</label>
+        <select id="student-id" name="student_id" required>
+          <option value="">{{ 'Choose a student'|translate(language) }}</option>
+          {% for student in students %}<option value="{{ student.id }}" {% if editing and editing.student_id == student.id %}selected{% endif %}>{{ student.name }} · {{ student.grade_level }}</option>{% endfor %}
+        </select>
+        {% if is_meeting %}
+          <label for="meeting-date">{{ 'Meeting date'|translate(language) }}</label>
+          <input id="meeting-date" type="date" name="meeting_date" value="{{ editing.meeting_date if editing else '' }}" required>
+          <label for="meeting-notes">{{ 'Meeting notes'|translate(language) }}</label>
+          <textarea id="meeting-notes" name="notes" rows="4" maxlength="4000" required>{{ editing.notes if editing else '' }}</textarea>
+        {% else %}
+          <label for="report-type">{{ 'Report type'|translate(language) }}</label>
+          <select id="report-type" name="report_type" required>
+            {% for kind in ['health', 'incident', 'emergency'] %}<option value="{{ kind }}" {% if editing and editing.report_type == kind %}selected{% endif %}>{{ kind|title|translate(language) }}</option>{% endfor %}
+          </select>
+          <label for="reported-at">{{ 'Reported date and time'|translate(language) }}</label>
+          <input id="reported-at" type="datetime-local" name="reported_at" value="{{ editing.reported_at if editing else '' }}" required>
+          <label for="report-details">{{ 'Details'|translate(language) }}</label>
+          <textarea id="report-details" name="details" rows="4" maxlength="4000" required>{{ editing.details if editing else '' }}</textarea>
+        {% endif %}
+        <button type="submit">{{ ('Save changes' if editing else 'Save record')|translate(language) }}</button>
+        {% if editing %}<a class="cancel-link" href="{{ url_for('views.parent_meetings' if is_meeting else 'views.health_reports') }}">{{ 'Cancel'|translate(language) }}</a>{% endif %}
+      </form>
+    </section>
+    <section class="portal-card account-list-card">
+      <div class="card-heading"><div><span class="card-icon blue">▤</span><div><h2>{{ 'Records'|translate(language) }}</h2><p>{{ records|length }} {{ 'records'|translate(language) }}</p></div></div></div>
+      {% if records %}
+        <div class="event-list">
+          {% for item in records %}
+            <article class="event-item">
+              <span class="event-date">{{ item.meeting_date if is_meeting else item.reported_at|replace('T',' ') }}</span>
+              <div class="request-content">
+                <h3>{{ item.student_name }} · {{ item.grade_level }}</h3>
+                {% if not is_meeting %}<p><strong>{{ item.report_type|title|translate(language) }}</strong></p>{% endif %}
+                <p>{{ item.notes if is_meeting else item.details }}</p>
+                {% if item.author %}<small>{{ 'Recorded by'|translate(language) }}: {{ item.author }}</small>{% endif %}
+                <div class="homework-actions">
+                  <a href="{{ url_for('views.parent_meetings' if is_meeting else 'views.health_reports', edit=item.id) }}">{{ 'Edit'|translate(language) }}</a>
+                  {% if session.get('role') in ('super_admin','manager') %}
+                    {% if is_meeting %}
+                      <form method="post" action="{{ url_for('views.delete_parent_meeting', meeting_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="danger-link" type="submit">{{ 'Delete'|translate(language) }}</button></form>
+                    {% else %}
+                      <form method="post" action="{{ url_for('views.delete_health_report', report_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="danger-link" type="submit">{{ 'Delete'|translate(language) }}</button></form>
+                    {% endif %}
+                  {% endif %}
+                </div>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="card-empty"><p>{{ 'No records found.'|translate(language) }}</p></div>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}

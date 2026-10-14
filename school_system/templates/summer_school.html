@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ ('Summer School Archive' if archived else 'Summer School')|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row">
+    <div><span class="eyebrow">{{ 'Registration & Enrollment'|translate(language) }}</span><h1>{{ ('Summer School Archive' if archived else 'Summer School Records')|translate(language) }}</h1>
+      <p class="muted">{{ 'Keep internal and external applicant records searchable by cohort year.'|translate(language) }}</p></div>
+    <a class="text-link" href="{{ url_for('views.summer_school_archive' if not archived else 'views.summer_school') }}">{{ ('View archive' if not archived else 'Active records')|translate(language) }} →</a>
+  </section>
+  {% if not archived %}
+    <section class="portal-card summer-form-card">
+      <h2>{{ 'Register a summer school applicant'|translate(language) }}</h2>
+      <form method="post" class="summer-form" id="summer-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>{{ 'Academic year'|translate(language) }}<input name="academic_year" value="{{ selected_year or current_year|string ~ '-' ~ (current_year + 1)|string }}" pattern="[0-9]{4}-[0-9]{4}" placeholder="2026-2027" required></label>
+        <label>{{ 'Applicant type'|translate(language) }}<select name="student_type" id="student-type" required><option value="">Choose…</option><option value="internal">{{ 'Internal student'|translate(language) }}</option><option value="external">{{ 'External applicant'|translate(language) }}</option></select></label>
+        <label id="internal-student-field" class="wide">{{ 'School student'|translate(language) }}<select name="student_id" id="student-id"><option value="">{{ 'Choose a student…'|translate(language) }}</option>{% for student in students %}<option value="{{ student.id }}" data-gender="{{ student.gender }}">{{ student.name }}</option>{% endfor %}</select></label>
+        <div id="external-fields" class="summer-form wide" hidden>
+          <label>{{ 'Full name'|translate(language) }}<input name="full_name"></label>
+          <label>{{ 'Gender'|translate(language) }}<select name="gender" id="external-gender"><option value="">Choose…</option><option>Female</option><option>Male</option><option>Other</option></select></label>
+          <label>{{ "Father's name"|translate(language) }}<input name="father_name"></label><label>{{ "Father's phone"|translate(language) }}<input name="father_phone" type="tel"></label>
+          <label>{{ "Mother's name"|translate(language) }}<input name="mother_name"></label><label>{{ "Mother's phone"|translate(language) }}<input name="mother_phone" type="tel"></label>
+          <label>{{ 'School of Origin'|translate(language) }}<input name="school_of_origin"></label>
+          <label class="wide">{{ 'Home address'|translate(language) }}<textarea name="home_address" rows="2"></textarea></label>
+        </div>
+        <button type="submit">{{ 'Register applicant'|translate(language) }}</button>
+      </form>
+    </section>
+    <script>
+      (() => {
+        const type = document.getElementById('student-type');
+        const internal = document.getElementById('internal-student-field');
+        const external = document.getElementById('external-fields');
+        const student = document.getElementById('student-id');
+        const gender = document.getElementById('external-gender');
+        const update = () => {
+          const isExternal = type.value === 'external';
+          external.hidden = !isExternal;
+          internal.hidden = isExternal;
+          internal.querySelector('select').required = !isExternal;
+          external.querySelectorAll('input,select,textarea').forEach((field) => {
+            field.required = isExternal;
+          });
+        };
+        student.addEventListener('change', () => {
+          const selected = student.options[student.selectedIndex];
+          gender.value = selected?.dataset.gender || '';
+        });
+        type.addEventListener('change', update);
+        update();
+      })();
+    </script>
+  {% endif %}
+  <section class="portal-card summer-records-card">
+    <form method="get" class="summer-search">
+      <label>{{ 'Search applicant, school of origin, guardian, or year'|translate(language) }}<input name="q" value="{{ query_text }}" placeholder="{{ 'Search records'|translate(language) }}"></label>
+      <label>{{ 'Academic year'|translate(language) }}<select name="year"><option value="">{{ 'All years'|translate(language) }}</option>{% for year in years %}<option value="{{ year.academic_year }}" {% if selected_year == year.academic_year %}selected{% endif %}>{{ year.academic_year }}</option>{% endfor %}</select></label>
+      <button type="submit">{{ 'Search'|translate(language) }}</button>
+    </form>
+    {% if records %}
+      <div class="table-scroll"><table>
+        <thead><tr><th>{{ 'Year'|translate(language) }}</th><th>{{ 'Type'|translate(language) }}</th><th>{{ 'Full name'|translate(language) }}</th><th>{{ 'Gender'|translate(language) }}</th><th>{{ 'Father / phone'|translate(language) }}</th><th>{{ 'Mother / phone'|translate(language) }}</th><th>{{ 'Address'|translate(language) }}</th><th>{{ 'School of Origin'|translate(language) }}</th><th>{{ 'Actions'|translate(language) }}</th></tr></thead>
+        <tbody>{% for record in records %}<tr>
+          <td>{{ record.academic_year }}</td><td>{{ record.student_type|title }}</td><td>{{ record.full_name }}</td><td>{{ record.gender }}</td>
+          <td>{{ record.father_name }}{% if record.father_phone %}<br>{{ record.father_phone }}{% endif %}</td>
+          <td>{{ record.mother_name }}{% if record.mother_phone %}<br>{{ record.mother_phone }}{% endif %}</td>
+          <td>{{ record.home_address }}</td><td>{{ record.school_of_origin }}</td>
+          <td><form method="post" action="{{ url_for('views.archive_summer_school_record', record_id=record.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="archived" value="{{ 0 if archived else 1 }}">
+            <button class="secondary-button" type="submit">{{ ('Restore' if archived else 'Archive')|translate(language) }}</button></form></td>
+        </tr>{% endfor %}</tbody>
+      </table></div>
+    {% else %}<div class="empty"><h2>{{ 'No records found'|translate(language) }}</h2><p>{{ 'Try another year or search term.'|translate(language) }}</p></div>{% endif %}
+  </section>
+{% endblock %}

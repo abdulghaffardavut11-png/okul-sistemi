@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Boarding & Hostel'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row">
+    <div><span class="eyebrow">{{ 'RESTRICTED ADMINISTRATION'|translate(language) }}</span><h1>{{ 'Boarding & Hostel'|translate(language) }}</h1><p class="muted">{{ academic_year }} · {{ 'Manage boarding and day-student assignments.'|translate(language) }}</p></div>
+  </section>
+  <div class="admin-grid">
+    <section class="portal-card user-form-card">
+      <div class="card-heading"><div><span class="card-icon lavender">＋</span><div><h2>{{ 'Assign boarding status'|translate(language) }}</h2></div></div></div>
+      {% if students %}
+        <form method="post" class="stack user-create-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label for="student-id">{{ 'Student'|translate(language) }}</label>
+          <select id="student-id" name="student_id" required><option value="">{{ 'Choose a student'|translate(language) }}</option>{% for student in students %}<option value="{{ student.id }}">{{ student.name }} · {{ student.grade_level }}</option>{% endfor %}</select>
+          <label for="residency">{{ 'Boarding status'|translate(language) }}</label>
+          <select id="residency" name="residency" required><option value="Day">{{ 'Day'|translate(language) }}</option><option value="Boarding">{{ 'Boarding'|translate(language) }}</option></select>
+          <label for="room">{{ 'Room'|translate(language) }}</label>
+          <input id="room" name="room" maxlength="80">
+          <button type="submit">{{ 'Save assignment'|translate(language) }}</button>
+        </form>
+      {% else %}<div class="card-empty"><p>{{ 'No students yet'|translate(language) }}</p></div>{% endif %}
+    </section>
+    <section class="portal-card account-list-card">
+      <div class="card-heading"><div><span class="card-icon blue">▤</span><div><h2>{{ 'Boarding assignments'|translate(language) }}</h2><p>{{ records|length }} {{ 'students'|translate(language) }}</p></div></div></div>
+      {% if records %}
+        <div class="table-scroll"><table>
+          <thead><tr><th>{{ 'Student'|translate(language) }}</th><th>{{ 'Class / grade'|translate(language) }}</th><th>{{ 'Boarding status'|translate(language) }}</th><th>{{ 'Room'|translate(language) }}</th></tr></thead>
+          <tbody>{% for row in records %}<tr><td>{{ row.student_name }}</td><td>{{ row.grade_level }}</td><td>{{ row.residency|translate(language) }}</td><td>{{ row.room or '—' }}</td></tr>{% endfor %}</tbody>
+        </table></div>
+      {% else %}<div class="card-empty"><p>{{ 'No records found.'|translate(language) }}</p></div>{% endif %}
+    </section>
+  </div>
+{% endblock %}

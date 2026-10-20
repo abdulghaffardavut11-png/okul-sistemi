@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 import json
 import os
 import re
@@ -15,6 +15,8 @@ from flask import (
     abort,
     current_app,
     flash,
+    g,
+    has_request_context,
     jsonify,
     redirect,
     render_template,
@@ -28,6 +30,7 @@ from werkzeug.security import generate_password_hash
 
 from .auth import ROLES, roles_required
 from .db import get_db
+from .exports import download, requested_format
 
 bp = Blueprint("views", __name__)
 
@@ -38,13 +41,23 @@ LANGUAGES = {
     "ar": "العربية (RTL)",
     "ha": "Hausa",
     "ak": "Twi (Akan)",
+    "fat": "Fante",
+    "ee": "Eʋegbe (Ewe)",
+    "gaa": "Gã",
 }
+# A language with no entry of its own falls back to a close relative before English.
+LANGUAGE_FALLBACK = {"fat": "ak"}
+RTL_LANGUAGES = {"ar"}
 
 MODULE_DEFAULTS = {
     "attendance": True,
     "summer_school": True,
     "teachers": True,
     "boarding": True,
+    "homework": True,
+    "timetable": True,
+    "gradebook": True,
+    "predica": True,
 }
 INDEX_LAYOUTS = {
     "modern_grid": "Modern Grid (Isabet Style)",
@@ -52,6 +65,124 @@ INDEX_LAYOUTS = {
     "minimal_dashboard": "Minimal Dashboard",
 }
 LEGACY_INDEX_LAYOUTS = {"compact_list": "classic_list"}
+
+DASHBOARD_BLOCKS = (
+    ("welcome", "Welcome banner"),
+    ("stats", "Statistics cards"),
+    ("user_info", "User information"),
+    ("announcements", "Weekly announcements"),
+    ("appointments", "Appointments & calendar"),
+    ("shortcuts", "Quick access / My classes"),
+    ("student_metrics", "Student: summary cards"),
+    ("student_profile", "Student: profile"),
+    ("student_grades", "Student: exam history"),
+    ("student_attendance", "Student: attendance"),
+    ("student_homework", "Student: homework"),
+    ("student_timetable", "Student: class timetable"),
+)
+STAT_CARDS = (
+    "Students", "Teachers", "Classes", "Enrollments",
+    "Exam results", "Attendance records", "My classes", "My students",
+)
+
+
+def _stat_key(label):
+    return "stat_" + label.lower().replace(" ", "_")
+
+
+DASHBOARD_BLOCK_KEYS = {key for key, _ in DASHBOARD_BLOCKS} | {_stat_key(l) for l in STAT_CARDS}
+BLOCK_KINDS = ("announcement", "block")
+BLOCK_TONES = ("info", "success", "warning", "danger")
+
+
+def _hidden_blocks(db):
+    return {
+        row["key"][len("block_"):]
+        for row in db.execute(
+            "SELECT key FROM settings WHERE key LIKE 'block\\_%' ESCAPE '\\' AND value='0'"
+        ).fetchall()
+    }
+
+
+def _dashboard_custom_blocks(db, role):
+    today = date.today().isoformat()
+    rows = db.execute(
+        "SELECT * FROM dashboard_blocks WHERE is_active=1 "
+        "AND (starts_on='' OR starts_on<=?) AND (ends_on='' OR ends_on>=?) "
+        "ORDER BY display_order,id",
+        (today, today),
+    ).fetchall()
+    return [r for r in rows if r["audience"] == "all" or role in r["audience"].split(",")]
+
+
+BULLETIN_PERIODS = {"weekly": 7, "monthly": 30, "yearly": 365}
+_DB_TIME = "%Y-%m-%d %H:%M:%S"
+
+
+def _utc_now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _bulletin_expiry(period, published_at, custom_local):
+    """Custom end wins; otherwise weekly=7, monthly=30, yearly=365 days from publishing."""
+    if custom_local:
+        return datetime.strptime(custom_local, "%Y-%m-%dT%H:%M").strftime(_DB_TIME), 1
+    start = datetime.strptime(published_at, _DB_TIME)
+    return (start + timedelta(days=BULLETIN_PERIODS[period])).strftime(_DB_TIME), 0
+
+
+def _archive_expired_bulletins(db):
+    """Move bulletins whose publishing time is over into the archive (lazy, on read)."""
+    now = _utc_now().strftime(_DB_TIME)
+    cursor = db.execute(
+        "UPDATE announcements SET archived_at=?,archive_reason='expired' "
+        "WHERE archived_at='' AND expires_at<>'' AND expires_at<=?",
+        (now, now),
+    )
+    if cursor.rowcount:
+        db.commit()
+    return cursor.rowcount
+
+
+UNASSIGNED_TEACHER_EMAIL = "unassigned@school.invalid"
+_TR_ALPHABET = "abcçdefgğhıijklmnoöprsştuüvyz"
+_TR_ORDER = {ch: i for i, ch in enumerate(_TR_ALPHABET)}
+
+
+def _tr_lower(text):
+    return str(text).replace("İ", "i").replace("I", "ı").lower()
+
+
+def _natural_key(text):
+    """A-Z order that is Turkish-aware and numeric-aware (2 < 10, 7A < 7B)."""
+    key = []
+    for part in re.split(r"(\d+)", _tr_lower(text).strip()):
+        if part.isdigit():
+            key.append((0, int(part), ()))
+        else:
+            key.append((1, 0, tuple(_TR_ORDER.get(ch, 100 + ord(ch)) for ch in part)))
+    return key
+
+
+def _sort_by_name(rows, field="name"):
+    return sorted(rows, key=lambda row: _natural_key(row[field]))
+
+
+_FOLD = str.maketrans("çğıöşü", "cgiosu")
+
+
+def _fold(text):
+    """Comparison key: Turkish-aware lower-case, single spaces, no diacritics."""
+    return re.sub(r"\s+", " ", _tr_lower(text or "")).strip().translate(_FOLD)
+
+
+def _class_key(name):
+    return _fold(name)
+
+
+def _clean_class_name(raw):
+    return re.sub(r"\s+", " ", raw or "").strip()
+
 
 RESOURCES = {
     "students": {
@@ -90,13 +221,13 @@ RESOURCES = {
             ("profile_picture", "Profile picture", "file", False),
         ],
         "columns": [("profile_picture", "Photo"), ("name", "Name"), ("email", "Email"), ("phone", "Phone"), ("home_address", "Home address"), ("subject", "Teaching subject"), ("assigned_classes", "Assigned classes")],
-        "select": "SELECT t.id, t.name, t.email, t.phone, t.home_address, t.subject, t.profile_picture, (SELECT group_concat(c.name, ', ') FROM courses c WHERE c.teacher_id=t.id) AS assigned_classes FROM teachers t ORDER BY t.name",
+        "select": "SELECT t.id, t.name, t.email, t.phone, t.home_address, t.subject, t.profile_picture, (SELECT group_concat(c.name, ', ') FROM courses c WHERE c.teacher_id=t.id) AS assigned_classes FROM teachers t WHERE t.email <> 'unassigned@school.invalid' ORDER BY t.name",
     },
     "courses": {
         "title": "Classes",
         "singular": "class",
         "table": "courses",
-        "fields": [("name", "Class name", "text"), ("code", "Class code", "text"), ("teacher_id", "Teacher", "select", "SELECT id, name FROM teachers ORDER BY name")],
+        "fields": [("name", "Class name", "text"), ("code", "Class code", "text"), ("teacher_id", "Teacher", "select", "SELECT id, name FROM teachers WHERE email <> 'unassigned@school.invalid' ORDER BY name")],
         "columns": [("name", "Class"), ("code", "Code"), ("teacher_name", "Teacher")],
         "select": "SELECT c.id, c.name, c.code, t.name AS teacher_name FROM courses c JOIN teachers t ON t.id = c.teacher_id ORDER BY c.name",
     },
@@ -429,11 +560,11 @@ TRANSLATIONS = {
         "Interactive attendance": "Etkileşimli yoklama",
         "Select a class and date, mark each student, then save the full register.": "Sınıfı ve tarihi seçin, öğrencileri işaretleyin ve yoklamayı kaydedin.",
         "Attendance date": "Yoklama tarihi",
-        "Load students": "Öğrencileri getir",
+        "Load students": "Yoklama Al",
         "Present (Derste)": "Derste",
         "Absent (Yok)": "Yok",
         "Late (Geç)": "Geç",
-        "Save attendance": "Yoklamayı kaydet",
+        "Save attendance": "Yoklamayı Kaydet",
         "No students are enrolled in this class.": "Bu sınıfa kayıtlı öğrenci yok.",
         "Gradebook": "Not defteri",
         "Choose a subject, name the exam, and enter student scores in one register.": "Dersi seçin, sınavı adlandırın ve öğrenci notlarını tek bir listede girin.",
@@ -563,9 +694,135 @@ TRANSLATIONS = {
         "Female": "Kadın",
         "Male": "Erkek",
         "Other": "Diğer",
-        "Present": "Var",
-        "Absent": "Yok",
-        "Late": "Geç",
+        "Mark everyone as": "Hepsini işaretle",
+        "Search students": "Öğrenci ara",
+        "Search by name, email or class": "Ad, e-posta veya sınıfa göre ara",
+        "Parent phone": "Veli telefonu",
+        "Archive / Storage": "Arşiv / Depo",
+        "Bulletin period": "Bülten periyodu",
+        "days": "gün",
+        "Weekly": "Haftalık",
+        "Monthly": "Aylık",
+        "Yearly": "Yıllık",
+        "Custom end date and time (optional)": "Özel bitiş tarihi ve saati (isteğe bağlı)",
+        "If empty, the end is calculated from the period: weekly 7 days, monthly 30 days, yearly 365 days. After the end, the bulletin moves to the archive automatically. Time is server time (UTC).": "Boş bırakırsanız bitiş periyoda göre hesaplanır: haftalık 7 gün, aylık 30 gün, yıllık 365 gün. Süre dolunca bülten otomatik olarak arşive taşınır. Saat, sunucu saatidir (UTC).",
+        "Archives on": "Arşive gider",
+        "Never": "Hiçbir zaman",
+        "custom": "özel",
+        "Bulletin moved to the archive.": "Bülten arşive taşındı.",
+        "Bulletin restored and published again.": "Bülten geri alındı ve yeniden yayınlandı.",
+        "Bulletin permanently deleted.": "Bülten kalıcı olarak silindi.",
+        "Choose weekly, monthly or yearly.": "Haftalık, aylık veya yıllık seçin.",
+        "Enter a valid end date and time.": "Geçerli bir bitiş tarihi ve saati girin.",
+        "The end date must be in the future. Choose a later end date or period.": "Bitiş zamanı gelecekte olmalıdır. Daha ileri bir tarih veya periyot seçin.",
+        "Bulletins whose publishing time is over are moved here automatically. Only the Super Admin can see them.": "Yayın süresi dolan bültenler otomatik olarak buraya taşınır. Sadece Süper Admin görebilir.",
+        "Published": "Yayınlandı",
+        "Ended": "Bitti",
+        "Moved manually": "Elle taşındı",
+        "Expired automatically": "Süresi dolunca otomatik taşındı",
+        "Delete permanently?": "Kalıcı olarak silinsin mi?",
+        "The archive is empty.": "Arşiv boş.",
+        "Period": "Periyot",
+        "Archived": "Arşivlendi",
+        "Reason": "Neden",
+        "Interface control": "Arayüz Yönetimi",
+        "Show, hide, rename and add anything on the dashboard and the side menu.": "Ana sayfadaki ve sol menüdeki her şeyi gösterin, gizleyin, yeniden adlandırın veya ekleyin.",
+        "Dashboard blocks": "Ana sayfa blokları",
+        "Announcements & custom blocks": "Duyurular ve özel bloklar",
+        "Side menu": "Sol menü",
+        "Modules": "Modüller",
+        "Turn any built-in card on or off. Changes apply to everyone immediately.": "Hazır kartları açıp kapatın. Değişiklik herkese anında yansır.",
+        "Statistics cards": "İstatistik kartları",
+        "Welcome banner": "Karşılama başlığı",
+        "User information": "Kullanıcı bilgileri",
+        "Weekly announcements": "Haftalık duyurular",
+        "Quick access / My classes": "Hızlı erişim / Sınıflarım",
+        "Student: summary cards": "Öğrenci: özet kartları",
+        "Student: profile": "Öğrenci: profil",
+        "Student: exam history": "Öğrenci: imtihan geçmişi",
+        "Student: attendance": "Öğrenci: yoklama",
+        "Student: homework": "Öğrenci: ödev",
+        "Student: class timetable": "Öğrenci: ders programı",
+        "Shown": "Açık",
+        "Hidden": "Gizli",
+        "Hide": "Gizle",
+        "Show": "Göster",
+        "Enabled": "Etkin",
+        "Disabled": "Devre dışı",
+        "Enable": "Etkinleştir",
+        "Disable": "Devre dışı bırak",
+        "Write your own announcement or block. It appears at the top of the dashboard for the roles you choose.": "Kendi duyurunuzu veya bloğunuzu yazın. Seçtiğiniz roller için ana sayfanın en üstünde görünür.",
+        "Editing": "Düzenleniyor",
+        "Type": "Tür",
+        "Color": "Renk",
+        "Announcement": "Duyuru",
+        "Custom block": "Özel blok",
+        "Info": "Bilgi",
+        "Success": "Başarı",
+        "Warning": "Uyarı",
+        "Danger": "Önemli",
+        "Title": "Başlık",
+        "Message": "Mesaj",
+        "Button text (optional)": "Buton yazısı (isteğe bağlı)",
+        "Button link (optional)": "Buton bağlantısı (isteğe bağlı)",
+        "or": "veya",
+        "Show from (optional)": "Başlangıç tarihi (isteğe bağlı)",
+        "Show until (optional)": "Bitiş tarihi (isteğe bağlı)",
+        "Who can see it? (none selected = everyone)": "Kimler görebilir? (hiçbiri seçilmezse herkes)",
+        "Add block": "Blok ekle",
+        "Cancel": "İptal",
+        "Your blocks": "Bloklarınız",
+        "Everyone": "Herkes",
+        "No custom blocks yet.": "Henüz özel blok yok.",
+        "Move up": "Yukarı taşı",
+        "Move down": "Aşağı taşı",
+        "Group": "Grup",
+        "Icon": "Simge",
+        "Save": "Kaydet",
+        "Rename titles and groups, change the icon, reorder, hide or remove menu items.": "Menü başlıklarını ve gruplarını yeniden adlandırın, simgeyi değiştirin, sıralayın, gizleyin veya kaldırın.",
+        "Add menu item": "Menü öğesi ekle",
+        "Turning a module off hides its menu item and closes its pages for everyone.": "Bir modülü kapatmak menü öğesini gizler ve sayfalarını herkese kapatır.",
+        "Open": "Aç",
+        "Announcements": "Duyurular",
+        "Dashboard block visibility updated.": "Ana sayfa bloğunun görünürlüğü güncellendi.",
+        "Menu item saved.": "Menü öğesi kaydedildi.",
+        "Dashboard block saved.": "Ana sayfa bloğu kaydedildi.",
+        "Dashboard block deleted.": "Ana sayfa bloğu silindi.",
+        "Choose a valid block type and color.": "Geçerli bir blok türü ve rengi seçin.",
+        "Enter a title (1–120 characters) and a message of up to 2000 characters.": "1–120 karakterlik bir başlık ve en çok 2000 karakterlik bir mesaj girin.",
+        "Links must start with https://, http:// or /.": "Bağlantılar https://, http:// veya / ile başlamalıdır.",
+        "Enter valid start and end dates (the end cannot be before the start).": "Geçerli başlangıç ve bitiş tarihi girin (bitiş başlangıçtan önce olamaz).",
+        "Homework": "Ödev",
+        "Gradebook": "Not defteri",
+        "Predica": "Performans tahmini",
+        "Attendance not taken": "Yoklama alınmadı",
+        "Field": "Alan",
+        "Value": "Değer",
+        "Email": "E-posta",
+        "National ID": "TC Kimlik No",
+        "Father name": "Baba adı",
+        "Father phone": "Baba tel",
+        "Mother name": "Anne adı",
+        "Mother phone": "Anne tel",
+        "Starts": "Başlangıç",
+        "Ends": "Bitiş",
+        "Average score": "Ortalama puan",
+        "Predicted score": "Tahmini puan",
+        "Residency": "Konaklama",
+        "Export": "Dışa Aktar",
+        "Excel (.xlsx)": "Excel (.xlsx)",
+        "CSV": "CSV",
+        "Print": "Yazdır",
+        "Exams & grades": "İmtihan ve notlar",
+        "Export my records": "Bilgilerimi dışa aktar",
+        "Export all dates": "Tüm tarihleri dışa aktar",
+        "Export attendance": "Yoklamayı dışa aktar",
+        "Type a class or pick one — a new class is created automatically.": "Sınıf yazın veya seçin — yeni sınıf otomatik açılır.",
+        "Class created automatically.": "Sınıf otomatik olarak açıldı.",
+        "Export this day": "Bu günü dışa aktar",
+        "Present": "Geldi",
+        "Absent": "Gelmedi",
+        "Late": "Geç Geldi",
         "Excused": "İzinli",
         "Super Admin": "Süper yönetici",
         "Admin": "Yönetici",
@@ -658,9 +915,44 @@ TRANSLATIONS = {
 }
 
 
+from .translations_data import FR_CORE, TR_EXTRA  # noqa: E402
+
+for _key, _value in TR_EXTRA.items():
+    TRANSLATIONS["tr"].setdefault(_key, _value)
+TRANSLATIONS.setdefault("fr", {}).update({k: v for k, v in FR_CORE.items() if k not in TRANSLATIONS["fr"]})
+
+
+def _db_overrides(language):
+    """Super-admin edited translations for one language (cached per request)."""
+    if not has_request_context():
+        return {}
+    cache = g.setdefault("_translation_cache", {})
+    if language not in cache:
+        try:
+            cache[language] = {
+                row["source"]: row["text"]
+                for row in get_db().execute(
+                    "SELECT source,text FROM translations WHERE language=?", (language,)
+                ).fetchall()
+            }
+        except sqlite3.Error:
+            cache[language] = {}
+    return cache[language]
+
+
 @bp.app_template_filter("translate")
 def translate(text, language="en"):
-    return TRANSLATIONS.get(language, {}).get(text, text)
+    """Database edit > built-in text > related language > the English original."""
+    if language == "en" or not isinstance(text, str):
+        return text
+    chain = [language]
+    if language in LANGUAGE_FALLBACK:
+        chain.append(LANGUAGE_FALLBACK[language])
+    for code in chain:
+        found = _db_overrides(code).get(text) or TRANSLATIONS.get(code, {}).get(text)
+        if found:
+            return found
+    return text
 
 
 def _module_states(db=None):
@@ -699,7 +991,7 @@ def _settings_context(db, values):
             "JOIN teachers t ON t.id=c.teacher_id ORDER BY c.name"
         ).fetchall(),
         "teachers": db.execute(
-            "SELECT id,name,subject FROM teachers ORDER BY name"
+            "SELECT id,name,subject FROM teachers WHERE email <> 'unassigned@school.invalid' ORDER BY name"
         ).fetchall(),
         "navigation_items": db.execute(
             "SELECT id,category,title,icon,url_endpoint,route_arg,is_active,display_order "
@@ -905,6 +1197,8 @@ def dashboard():
             boarding_assignment=boarding_assignment,
             passed=sum(1 for grade in grades if grade["score"] >= 50),
             failed=sum(1 for grade in grades if grade["score"] < 50),
+            hidden=_hidden_blocks(db),
+            custom_blocks=_dashboard_custom_blocks(db, user["role"]),
         )
 
     teacher_courses = []
@@ -935,14 +1229,14 @@ def dashboard():
     elif user["role"] in {"manager", "admin"}:
         counts = {
             "Students": db.execute("SELECT COUNT(*) FROM students").fetchone()[0],
-            "Teachers": db.execute("SELECT COUNT(*) FROM teachers").fetchone()[0],
+            "Teachers": db.execute("SELECT COUNT(*) FROM teachers WHERE email <> 'unassigned@school.invalid'").fetchone()[0],
             "Exam results": db.execute("SELECT COUNT(*) FROM grades").fetchone()[0],
             "Attendance records": db.execute("SELECT COUNT(*) FROM attendance").fetchone()[0],
         }
     elif user["role"] in {"super_admin", "manager", "admin"}:
         counts = {
             "Students": db.execute("SELECT COUNT(*) FROM students").fetchone()[0],
-            "Teachers": db.execute("SELECT COUNT(*) FROM teachers").fetchone()[0],
+            "Teachers": db.execute("SELECT COUNT(*) FROM teachers WHERE email <> 'unassigned@school.invalid'").fetchone()[0],
             "Classes": db.execute("SELECT COUNT(*) FROM courses").fetchone()[0],
             "Enrollments": db.execute("SELECT COUNT(*) FROM enrollments").fetchone()[0],
         }
@@ -953,8 +1247,11 @@ def dashboard():
     if not module_states["teachers"]:
         counts.pop("Teachers", None)
     staff_user = user["role"] in STAFF_ROLES
+    _archive_expired_bulletins(db)
+    _sync_class_enrollments(db)
     announcements = db.execute(
-        "SELECT title, body FROM announcements ORDER BY published_at DESC LIMIT 3"
+        "SELECT title, body FROM announcements WHERE archived_at='' "
+        "ORDER BY published_at DESC LIMIT 3"
     ).fetchall() if staff_user else []
     appointments = db.execute(
         "SELECT title, starts_at, notes FROM appointments "
@@ -970,6 +1267,8 @@ def dashboard():
         announcements=announcements,
         appointments=appointments,
         teacher_courses=teacher_courses,
+        hidden=_hidden_blocks(db),
+        custom_blocks=_dashboard_custom_blocks(db, user["role"]),
         groups=PORTAL_GROUPS,
         index_layout=_index_layout(
             (
@@ -1189,6 +1488,386 @@ def academic_year_settings():
     return render_template(
         "academic_settings.html",
         academic_year=request.form.get("academic_year", current_year),
+    )
+
+
+def _safe_link(url):
+    return bool(re.fullmatch(r"(https?://[^\s<>\"']+|/[^\s<>\"'/][^\s<>\"']*|/)", url))
+
+
+def _set_setting(db, key, value):
+    db.execute(
+        "INSERT INTO settings (key,value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+
+
+def _renumber_navigation(db):
+    rows = db.execute(
+        "SELECT id,category FROM navigation_items ORDER BY display_order,id"
+    ).fetchall()
+    for position, row in enumerate(rows):
+        db.execute("UPDATE navigation_items SET display_order=? WHERE id=?", (position, row["id"]))
+    return rows
+
+
+def _move_within(db, table, item_id, direction, same_group=None):
+    """Swap an item's display_order with its neighbour (optionally same group only)."""
+    rows = (
+        _renumber_navigation(db) if table == "navigation_items"
+        else db.execute("SELECT id FROM dashboard_blocks ORDER BY display_order,id").fetchall()
+    )
+    if table == "dashboard_blocks":
+        for position, row in enumerate(rows):
+            db.execute("UPDATE dashboard_blocks SET display_order=? WHERE id=?", (position, row["id"]))
+    ids = [r["id"] for r in rows]
+    if item_id not in ids:
+        abort(404)
+    index = ids.index(item_id)
+    step = -1 if direction == "up" else 1
+    j = index + step
+    while 0 <= j < len(rows):
+        if same_group is None or rows[j][same_group] == rows[index][same_group]:
+            db.execute(f"UPDATE {table} SET display_order=? WHERE id=?", (j, ids[index]))
+            db.execute(f"UPDATE {table} SET display_order=? WHERE id=?", (index, ids[j]))
+            return
+        j += step
+
+
+_TRANSLATABLE_CACHE = None
+
+
+def _translatable_strings():
+    """Every English UI string the portal can show (template filters, flash messages, built-ins)."""
+    global _TRANSLATABLE_CACHE
+    if _TRANSLATABLE_CACHE is None:
+        found = set()
+        template_dir = os.path.join(os.path.dirname(__file__), "templates")
+        for name in os.listdir(template_dir):
+            if name.endswith(".html"):
+                with open(os.path.join(template_dir, name), encoding="utf-8") as handle:
+                    text = handle.read()
+                found |= set(re.findall(r"'((?:[^'\\\n]|\\.)+)'\s*\|\s*translate", text))
+                found |= set(re.findall(r'"((?:[^"\\\n]|\\.)+)"\s*\|\s*translate', text))
+        with open(__file__, encoding="utf-8") as handle:
+            found |= set(re.findall(r'flash\(\s*"((?:[^"\\\n]|\\.)+)"', handle.read()))
+        for table in TRANSLATIONS.values():
+            found |= set(table)
+        _TRANSLATABLE_CACHE = sorted(
+            (x for x in found if 1 < len(x) <= 500 and "{{" not in x and "{%" not in x),
+            key=lambda x: x.lower(),
+        )
+    return _TRANSLATABLE_CACHE
+
+
+def _translation_rows(db, language):
+    overrides = {
+        r["source"]: r["text"]
+        for r in db.execute("SELECT source,text FROM translations WHERE language=?", (language,)).fetchall()
+    }
+    built_in = TRANSLATIONS.get(language, {})
+    rows = []
+    for source in _translatable_strings():
+        if source in overrides:
+            rows.append((source, overrides[source], "custom"))
+        elif source in built_in:
+            rows.append((source, built_in[source], "built-in"))
+        else:
+            rows.append((source, "", "missing"))
+    return rows
+
+
+def _read_upload_table(upload):
+    """Rows (list of cell lists) from an uploaded .xlsx or .csv file."""
+    data = upload.read(1_000_001)
+    if len(data) > 1_000_000:
+        raise ValueError("The file is too large (1 MB maximum).")
+    name = (upload.filename or "").lower()
+    if name.endswith(".xlsx"):
+        from openpyxl import load_workbook
+        try:
+            sheet = load_workbook(io.BytesIO(data), read_only=True, data_only=True).worksheets[0]
+        except Exception as error:  # corrupt workbook
+            raise ValueError("The file could not be read.") from error
+        return [[("" if c is None else str(c)) for c in row] for row in sheet.iter_rows(values_only=True)]
+    if not name.endswith(".csv"):
+        raise ValueError("Upload an .xlsx or .csv file.")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = data.decode("cp1254", errors="replace")
+    first = text.splitlines()[0] if text.strip() else ""
+    delimiter = max((";", ",", "\t"), key=first.count)
+    return [row for row in csv.reader(io.StringIO(text), delimiter=delimiter)]
+
+
+def _save_translation(db, language, source, text):
+    built_in = TRANSLATIONS.get(language, {}).get(source, "")
+    text = text.strip()
+    if not text or text == built_in:
+        db.execute("DELETE FROM translations WHERE language=? AND source=?", (language, source))
+    else:
+        db.execute(
+            "INSERT INTO translations (language,source,text) VALUES (?,?,?) "
+            "ON CONFLICT(language,source) DO UPDATE SET text=excluded.text,updated_at=CURRENT_TIMESTAMP",
+            (language, source, text),
+        )
+
+
+@bp.route("/settings/translations", methods=("GET", "POST"))
+@roles_required("super_admin")
+def translation_settings():
+    """Super Admin: complete or correct any language (built-in text is the starting point)."""
+    db = get_db()
+    language = request.values.get("lang", "")
+    if language not in LANGUAGES or language == "en":
+        language = "tr"
+    if request.method == "POST":
+        action = request.form.get("action", "")
+        back = redirect(url_for(
+            "views.translation_settings", lang=language,
+            filter=request.form.get("filter") or None, q=request.form.get("q") or None,
+            page=request.form.get("page") or None,
+        ))
+        universe = set(_translatable_strings())
+        if action == "save":
+            saved = 0
+            for index in range(60):
+                source = request.form.get(f"source_{index}")
+                if source is None:
+                    break
+                if source in universe and f"text_{index}" in request.form:
+                    text = request.form[f"text_{index}"]
+                    if len(text) > 500:
+                        flash("Each translation can have at most 500 characters.", "error")
+                        return back
+                    _save_translation(db, language, source, text)
+                    saved += 1
+            db.commit()
+            flash("Translations saved.", "success")
+        elif action == "import":
+            upload = request.files.get("file")
+            if not upload or not upload.filename:
+                flash("Choose a file to import.", "error")
+                return back
+            try:
+                table = _read_upload_table(upload)
+            except ValueError as error:
+                flash(str(error), "error")
+                return back
+            imported = skipped = 0
+            for row in table:
+                if len(row) < 2:
+                    continue
+                source, text = (row[0] or "").strip(), (row[1] or "").strip()
+                if source in universe and text and len(text) <= 500:
+                    _save_translation(db, language, source, text)
+                    imported += 1
+                elif source and text and source not in {"Source", "Translation"}:
+                    skipped += 1
+            db.commit()
+            flash(f"Imported {imported} translations ({skipped} rows skipped).", "success")
+        else:
+            abort(400)
+        return back
+
+    show = request.args.get("filter", "all")
+    search = _fold(request.args.get("q", "")[:80])
+    rows = _translation_rows(db, language)
+    total = len(rows)
+    done = sum(1 for r in rows if r[2] != "missing")
+    if show == "missing":
+        rows = [r for r in rows if r[2] == "missing"]
+    if search:
+        rows = [r for r in rows if search in _fold(r[0]) or search in _fold(r[1])]
+    per_page = 30
+    pages = max(1, -(-len(rows) // per_page))
+    page = min(max(request.args.get("page", 1, type=int) or 1, 1), pages)
+    return render_template(
+        "translations.html", edit_language=language,
+        rows=rows[(page - 1) * per_page: page * per_page], total=total, done=done,
+        show=show, q=request.args.get("q", ""), page=page, pages=pages, shown=len(rows),
+        fallback=LANGUAGE_FALLBACK.get(language),
+    )
+
+
+@bp.get("/export/translations")
+@roles_required("super_admin")
+def export_translations():
+    """A sheet for translators: Source / Translation / Status (fill in, then import it back)."""
+    language = request.args.get("lang", "")
+    if language not in LANGUAGES or language == "en":
+        abort(404)
+    rows = _translation_rows(get_db(), language)
+    if request.args.get("missing") == "1":
+        rows = [r for r in rows if r[2] == "missing"]
+    return download(
+        f"translations_{language}",
+        [(LANGUAGES[language][:28], ["Source", "Translation", "Status"], rows)],
+    )
+
+
+@bp.route("/settings/interface", methods=("GET", "POST"))
+@roles_required("super_admin")
+def interface_settings():
+    """Super Admin: dashboard blocks, side menu, modules and custom blocks."""
+    db = get_db()
+    user = _current_user()
+    if request.method == "POST":
+        action = request.form.get("action", "")
+        anchor = request.form.get("anchor", "") or None
+        back = redirect(url_for("views.interface_settings", _anchor=anchor))
+        item_id = _optional_int(request.form.get("item_id"))
+        if action == "toggle_dash_block":
+            key = request.form.get("key", "")
+            if key not in DASHBOARD_BLOCK_KEYS:
+                abort(400)
+            hidden = key in _hidden_blocks(db)
+            _set_setting(db, "block_" + key, "1" if hidden else "0")
+            flash("Dashboard block visibility updated.", "success")
+        elif action == "toggle_module":
+            name = request.form.get("module_name", "")
+            if name not in MODULE_DEFAULTS:
+                abort(400)
+            _set_setting(db, "module_" + name, "0" if _module_states(db)[name] else "1")
+            flash("Module visibility updated.", "success")
+        elif action in {"save_item", "move_up", "move_down", "toggle_item", "delete_item"}:
+            item = db.execute(
+                "SELECT id,is_active FROM navigation_items WHERE id=?", (item_id,)
+            ).fetchone() if item_id else None
+            if item is None:
+                abort(404)
+            if action == "save_item":
+                title = request.form.get("title", "").strip()
+                category = request.form.get("category", "").strip()
+                icon = request.form.get("icon", "").strip()
+                if not (1 <= len(title) <= 100 and 1 <= len(category) <= 100 and 1 <= len(icon) <= 50):
+                    flash("Enter a valid navigation title, category, icon, and destination.", "error")
+                    return back
+                db.execute(
+                    "UPDATE navigation_items SET title=?,category=?,icon=? WHERE id=?",
+                    (title, category, icon, item["id"]),
+                )
+                flash("Menu item saved.", "success")
+            elif action in {"move_up", "move_down"}:
+                _move_within(db, "navigation_items", item["id"], action[5:], "category")
+            elif action == "toggle_item":
+                db.execute(
+                    "UPDATE navigation_items SET is_active=? WHERE id=?",
+                    (0 if item["is_active"] else 1, item["id"]),
+                )
+                flash("Navigation item visibility updated.", "success")
+            else:
+                db.execute("DELETE FROM navigation_items WHERE id=?", (item["id"],))
+                flash("Navigation item deleted.", "success")
+        elif action == "add_item":
+            target = NAVIGATION_TARGETS.get(request.form.get("target", ""))
+            if target is None:
+                abort(400)
+            order = db.execute(
+                "SELECT COALESCE(MAX(display_order),-1)+1 FROM navigation_items"
+            ).fetchone()[0]
+            db.execute(
+                "INSERT INTO navigation_items (category,title,icon,url_endpoint,route_arg,is_active,display_order) "
+                "VALUES (?,?,?,?,?,1,?)",
+                (target["category"], target["title"], target["icon"],
+                 target["endpoint"], target["route_arg"], order),
+            )
+            flash("Navigation item added.", "success")
+        elif action == "save_block":
+            kind = request.form.get("kind", "")
+            tone = request.form.get("tone", "")
+            title = request.form.get("title", "").strip()
+            body = request.form.get("body", "").strip()
+            link_label = request.form.get("link_label", "").strip()
+            link_url = request.form.get("link_url", "").strip()
+            starts_on = request.form.get("starts_on", "").strip()
+            ends_on = request.form.get("ends_on", "").strip()
+            roles = [r for r in request.form.getlist("audience") if r in ROLES]
+            audience = ",".join(roles) if roles and len(roles) < len(ROLES) else "all"
+            error = None
+            if kind not in BLOCK_KINDS or tone not in BLOCK_TONES:
+                error = "Choose a valid block type and color."
+            elif not 1 <= len(title) <= 120 or len(body) > 2000 or len(link_label) > 60:
+                error = "Enter a title (1–120 characters) and a message of up to 2000 characters."
+            elif link_url and not _safe_link(link_url):
+                error = "Links must start with https://, http:// or /."
+            elif (starts_on and not _valid_date(starts_on)) or (ends_on and not _valid_date(ends_on)) or (
+                starts_on and ends_on and ends_on < starts_on
+            ):
+                error = "Enter valid start and end dates (the end cannot be before the start)."
+            if error:
+                flash(error, "error")
+                return back
+            fields = (kind, title, body, link_label if link_url else "", link_url, tone,
+                      audience, starts_on, ends_on)
+            if item_id:
+                if not db.execute("SELECT 1 FROM dashboard_blocks WHERE id=?", (item_id,)).fetchone():
+                    abort(404)
+                db.execute(
+                    "UPDATE dashboard_blocks SET kind=?,title=?,body=?,link_label=?,link_url=?,"
+                    "tone=?,audience=?,starts_on=?,ends_on=? WHERE id=?",
+                    (*fields, item_id),
+                )
+            else:
+                order = db.execute(
+                    "SELECT COALESCE(MAX(display_order),-1)+1 FROM dashboard_blocks"
+                ).fetchone()[0]
+                db.execute(
+                    "INSERT INTO dashboard_blocks (kind,title,body,link_label,link_url,tone,"
+                    "audience,starts_on,ends_on,display_order,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (*fields, order, user["id"]),
+                )
+            flash("Dashboard block saved.", "success")
+        elif action in {"block_up", "block_down", "block_toggle", "block_delete"}:
+            block = db.execute(
+                "SELECT id,is_active FROM dashboard_blocks WHERE id=?", (item_id,)
+            ).fetchone() if item_id else None
+            if block is None:
+                abort(404)
+            if action in {"block_up", "block_down"}:
+                _move_within(db, "dashboard_blocks", block["id"], action[6:])
+            elif action == "block_toggle":
+                db.execute(
+                    "UPDATE dashboard_blocks SET is_active=? WHERE id=?",
+                    (0 if block["is_active"] else 1, block["id"]),
+                )
+                flash("Dashboard block visibility updated.", "success")
+            else:
+                db.execute("DELETE FROM dashboard_blocks WHERE id=?", (block["id"],))
+                flash("Dashboard block deleted.", "success")
+        else:
+            abort(400)
+        db.commit()
+        return back
+
+    hidden = _hidden_blocks(db)
+    nav_items = db.execute(
+        "SELECT id,category,title,icon,url_endpoint,route_arg,is_active "
+        "FROM navigation_items ORDER BY display_order,id"
+    ).fetchall()
+    present = {
+        (f"{i['url_endpoint']}:{i['route_arg']}" if i["route_arg"] else i["url_endpoint"])
+        for i in nav_items
+    }
+    editing = None
+    edit_id = request.args.get("edit_block", type=int)
+    if edit_id:
+        editing = db.execute("SELECT * FROM dashboard_blocks WHERE id=?", (edit_id,)).fetchone()
+    return render_template(
+        "interface_settings.html",
+        dash_blocks=[(k, l, k not in hidden) for k, l in DASHBOARD_BLOCKS],
+        stat_cards=[(_stat_key(l), l, _stat_key(l) not in hidden) for l in STAT_CARDS],
+        modules=_module_states(db),
+        menu_items=nav_items,
+        addable=[(k, t) for k, t in NAVIGATION_TARGETS.items() if k not in present],
+        blocks=db.execute("SELECT * FROM dashboard_blocks ORDER BY display_order,id").fetchall(),
+        editing=editing,
+        editing_roles=(editing["audience"].split(",") if editing and editing["audience"] != "all" else []),
+        all_roles=ROLES,
+        block_kinds=BLOCK_KINDS,
+        block_tones=BLOCK_TONES,
     )
 
 
@@ -1412,26 +2091,15 @@ def export_students():
         "WHERE e.academic_year=? ORDER BY c.name,s.name",
         (academic_year, int(match.group(1))),
     ).fetchall()
-    stream = io.StringIO(newline="")
-    writer = csv.writer(stream)
-    writer.writerow(("ID", "Class", "Student Full Name", "Gender", "Academic Year", "Status"))
-    for student in students:
-        values = (
-            student["id"], student["class_name"], student["name"],
-            student["gender"], student["academic_year"], student["status"],
-        )
-        writer.writerow(
-            tuple(
-                _safe_csv_value(value)
-                for value in values
-            )
-        )
-    response = make_response("\ufeff" + stream.getvalue())
-    response.headers["Content-Disposition"] = (
-        f'attachment; filename="student_records_{academic_year}.csv"'
+    headers = ("ID", "Class", "Student Full Name", "Gender", "Academic Year", "Status")
+    rows = [
+        (st["id"], st["class_name"], st["name"], st["gender"], st["academic_year"], st["status"])
+        for st in students
+    ]
+    return download(
+        f"student_records_{academic_year}", [("Students", headers, rows)],
+        requested_format("csv"),
     )
-    response.headers["Content-Type"] = "text/csv; charset=utf-8"
-    return response
 
 
 @bp.get("/export/report/<int:student_id>")
@@ -1509,11 +2177,279 @@ def _safe_csv_value(value):
     return value
 
 
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def _export_language():
+    return session.get("language") or "en"
+
+
+def _t(text):
+    return translate(text, _export_language())
+
+
+def _export_year(db):
+    row = db.execute("SELECT value FROM settings WHERE key='academic_year'").fetchone()
+    match = re.fullmatch(r"(\d{4})-(\d{4})", row["value"] if row else "")
+    return int(match.group(1)) if match else date.today().year
+
+
+@bp.get("/export/data/<resource>")
+@roles_required(*ROLES)
+def export_resource(resource):
+    """Export any /manage list (students, teachers, classes, grades, ...)."""
+    definition = RESOURCES.get(resource)
+    if definition is None:
+        abort(404)
+    user = _current_user()
+    if resource not in _resource_allowed(user["role"]):
+        abort(403)
+    if resource == "attendance":
+        _require_module("attendance")
+    elif resource == "teachers":
+        _require_module("teachers")
+    records = _resource_records(get_db(), resource, user)
+    columns = [c for c in definition["columns"] if c[0] != "profile_picture"]
+    present = set(records[0].keys()) if records else set()
+    columns = [c for c in columns if not records or c[0] in present]
+    rows = [[_t(r[key]) if key == "status" else r[key] for key, _ in columns] for r in records]
+    return download(
+        resource, [(_t(definition["singular"]), [_t(label) for _, label in columns], rows)]
+    )
+
+
+@bp.get("/export/gradebook")
+@roles_required(*ACADEMIC_WRITE_ROLES)
+def export_gradebook():
+    db = get_db()
+    user = _current_user()
+    scope, params = _course_scope(user)
+    course_id = _optional_int(request.args.get("course_id"))
+    query = (
+        "SELECT c.name,s.name,s.grade_level,g.exam_name,g.graded_on,g.score "
+        "FROM grades g JOIN enrollments e ON e.id=g.enrollment_id "
+        "JOIN students s ON s.id=e.student_id JOIN courses c ON c.id=e.course_id "
+        "WHERE 1=1" + scope
+    )
+    params = list(params)
+    if course_id:
+        if not db.execute(
+            "SELECT 1 FROM courses c WHERE c.id=?" + scope, [course_id, *params]
+        ).fetchone():
+            abort(403 if user["role"] == "teacher" else 404)
+        query += " AND c.id=?"
+        params.append(course_id)
+    rows = db.execute(query + " ORDER BY c.name,g.graded_on,g.exam_name,s.name", params).fetchall()
+    headers = [_t(h) for h in ("Class", "Student", "Class / grade", "Exam", "Date", "Score")]
+    return download("grades", [(_t("Gradebook"), headers, [tuple(r) for r in rows])])
+
+
+@bp.get("/export/attendance")
+@roles_required(*ACADEMIC_WRITE_ROLES)
+def export_attendance():
+    _require_module("attendance")
+    db = get_db()
+    user = _current_user()
+    scope, params = _course_scope(user)
+    course_id = _optional_int(request.args.get("course_id"))
+    day = request.args.get("attendance_date", "").strip()
+    if day and not _valid_date(day):
+        abort(400)
+    params = list(params)
+    query = (
+        "SELECT c.name,s.name,s.grade_level,{day},COALESCE(a.status,'') "
+        "FROM enrollments e JOIN students s ON s.id=e.student_id "
+        "JOIN courses c ON c.id=e.course_id "
+    )
+    if day:
+        query = query.format(day="?") + (
+            "LEFT JOIN attendance a ON a.enrollment_id=e.id AND a.attendance_date=? WHERE 1=1"
+        )
+        params = [day, day] + params
+    else:
+        query = query.format(day="a.attendance_date") + (
+            "JOIN attendance a ON a.enrollment_id=e.id WHERE 1=1"
+        )
+    query += scope
+    if course_id:
+        if not db.execute(
+            "SELECT 1 FROM courses c WHERE c.id=?" + scope,
+            [course_id, *_course_scope(user)[1]],
+        ).fetchone():
+            abort(403 if user["role"] == "teacher" else 404)
+        query += " AND c.id=?"
+        params.append(course_id)
+    rows = db.execute(query + " ORDER BY c.name,s.name", params).fetchall()
+    out = [
+        (r[0], r[1], r[2], r[3], _t(r[4]) if r[4] else _t("Attendance not taken"))
+        for r in rows
+    ]
+    headers = [_t(h) for h in ("Class", "Student", "Class / grade", "Attendance date", "Status")]
+    return download("attendance", [(_t("Attendance"), headers, out)])
+
+
+def _own_student_id_or_scope(db, user, student_id):
+    """Authorise exports of one student; returns a course filter for teachers."""
+    role = user["role"]
+    if role in {"super_admin", "manager", "admin"}:
+        return "", ()
+    if role in {"student", "parent"}:
+        if not user["student_id"] or user["student_id"] != student_id:
+            abort(403)
+        return "", ()
+    if role == "teacher":
+        if not user["teacher_id"]:
+            abort(403)
+        if not db.execute(
+            "SELECT 1 FROM enrollments e JOIN courses c ON c.id=e.course_id "
+            "WHERE e.student_id=? AND c.teacher_id=?",
+            (student_id, user["teacher_id"]),
+        ).fetchone():
+            abort(403)
+        return " AND c.teacher_id=?", (user["teacher_id"],)
+    abort(403)
+
+
+@bp.get("/export/student/<int:student_id>")
+@roles_required(*STAFF_ROLES, "student", "parent")
+def export_student_full(student_id):
+    """One workbook with a student's profile, exams, attendance and homework.
+
+    Health reports, parent-meeting notes and staff logs are never included.
+    """
+    db = get_db()
+    user = _current_user()
+    scope, scope_params = _own_student_id_or_scope(db, user, student_id)
+    student = db.execute("SELECT * FROM students WHERE id=?", (student_id,)).fetchone()
+    if student is None:
+        abort(404)
+    keys = student.keys()
+    info_fields = [
+        ("name", "Student"), ("grade_level", "Class / grade"), ("email", "Email"),
+        ("gender", "Gender"), ("national_id", "National ID"),
+        ("father_name", "Father name"), ("father_phone", "Father phone"),
+        ("mother_name", "Mother name"), ("mother_phone", "Mother phone"),
+        ("home_address", "Home address"),
+    ]
+    info = [(_t(label), student[key]) for key, label in info_fields if key in keys]
+    grades = db.execute(
+        "SELECT c.name,g.exam_name,g.graded_on,g.score FROM grades g "
+        "JOIN enrollments e ON e.id=g.enrollment_id JOIN courses c ON c.id=e.course_id "
+        "WHERE e.student_id=?" + scope + " ORDER BY g.graded_on,c.name",
+        (student_id, *scope_params),
+    ).fetchall()
+    attendance = db.execute(
+        "SELECT c.name,a.attendance_date,a.status FROM attendance a "
+        "JOIN enrollments e ON e.id=a.enrollment_id JOIN courses c ON c.id=e.course_id "
+        "WHERE e.student_id=?" + scope + " ORDER BY a.attendance_date,c.name",
+        (student_id, *scope_params),
+    ).fetchall()
+    homework = db.execute(
+        "SELECT c.name,h.title,h.description,h.due_date FROM homework h "
+        "JOIN courses c ON c.id=h.course_id JOIN enrollments e ON e.course_id=c.id "
+        "WHERE e.student_id=?" + scope + " ORDER BY h.due_date",
+        (student_id, *scope_params),
+    ).fetchall()
+    sheets = [
+        (_t("Student Information"), [_t("Field"), _t("Value")], info),
+        (_t("Exams & grades"), [_t(h) for h in ("Class", "Exam", "Date", "Score")],
+         [tuple(r) for r in grades]),
+        (_t("Attendance"), [_t(h) for h in ("Class", "Attendance date", "Status")],
+         [(r[0], r[1], _t(r[2])) for r in attendance]),
+        (_t("Homework"), [_t(h) for h in ("Class", "Title", "Description", "Due date")],
+         [tuple(r) for r in homework]),
+    ]
+    return download(f"student_{student_id}", sheets)
+
+
+@bp.get("/export/homework")
+@roles_required(*STAFF_ROLES, "student", "parent")
+def export_homework():
+    db = get_db()
+    user = _current_user()
+    if user["role"] in ("student", "parent"):
+        if not user["student_id"]:
+            abort(403)
+        rows = db.execute(
+            "SELECT c.name,h.title,h.description,h.due_date FROM homework h "
+            "JOIN courses c ON c.id=h.course_id JOIN enrollments e ON e.course_id=c.id "
+            "WHERE e.student_id=? ORDER BY h.due_date", (user["student_id"],),
+        ).fetchall()
+    else:
+        scope, params = _course_scope(user)
+        rows = db.execute(
+            "SELECT c.name,h.title,h.description,h.due_date FROM homework h "
+            "JOIN courses c ON c.id=h.course_id WHERE 1=1" + scope + " ORDER BY h.due_date",
+            params,
+        ).fetchall()
+    headers = [_t(h) for h in ("Class", "Title", "Description", "Due date")]
+    return download("homework", [(_t("Homework"), headers, [tuple(r) for r in rows])])
+
+
+@bp.get("/export/timetable")
+@roles_required(*STAFF_ROLES, "student", "parent")
+def export_timetable():
+    db = get_db()
+    user = _current_user()
+    if user["role"] in ("student", "parent"):
+        if not user["student_id"]:
+            abort(403)
+        rows = db.execute(
+            "SELECT c.name,t.weekday,t.starts_at,t.ends_at,t.room FROM timetable t "
+            "JOIN courses c ON c.id=t.course_id JOIN enrollments e ON e.course_id=c.id "
+            "WHERE e.student_id=? ORDER BY t.weekday,t.starts_at", (user["student_id"],),
+        ).fetchall()
+    else:
+        scope, params = _course_scope(user)
+        rows = db.execute(
+            "SELECT c.name,t.weekday,t.starts_at,t.ends_at,t.room FROM timetable t "
+            "JOIN courses c ON c.id=t.course_id WHERE 1=1" + scope
+            + " ORDER BY t.weekday,t.starts_at", params,
+        ).fetchall()
+    out = [(r[0], _t(WEEKDAYS[r[1]]), r[2], r[3], r[4]) for r in rows]
+    headers = [_t(h) for h in ("Class", "Weekday", "Starts", "Ends", "Room")]
+    return download("timetable", [(_t("Class timetable"), headers, out)])
+
+
+@bp.get("/export/predica")
+@roles_required(*STAFF_ROLES)
+def export_predica():
+    rows = _build_predictions(get_db(), _current_user())
+    headers = [_t(h) for h in (
+        "Student", "Class / grade", "Class", "Average score", "Attendance rate",
+        "Predicted score", "Risk level")]
+    out = [
+        (r["name"], r["grade_level"], r["course_name"],
+         None if r["average_score"] is None else round(r["average_score"], 1),
+         r["attendance_rate"], r["predicted_score"], _t(r["risk_level"]))
+        for r in rows
+    ]
+    return download("performance_forecast", [(_t("Performance Forecast"), headers, out)])
+
+
+@bp.get("/export/boarding")
+@roles_required("super_admin", "manager", "admin", "boarding_master")
+def export_boarding():
+    db = get_db()
+    rows = db.execute(
+        "SELECT s.name,s.grade_level,b.academic_year,b.residency,b.room "
+        "FROM boarding_assignments b JOIN students s ON s.id=b.student_id "
+        "ORDER BY b.academic_year DESC,s.name"
+    ).fetchall()
+    headers = [_t(h) for h in ("Student", "Class / grade", "Academic year", "Residency", "Room")]
+    return download("boarding", [(_t("Boarding & Hostel"), headers, [tuple(r) for r in rows])])
+
+
 @bp.get("/predica")
 @roles_required(*STAFF_ROLES)
 def predica():
-    db = get_db()
-    user = _current_user()
+    _require_module("predica")
+    return render_template(
+        "predica.html", predictions=_build_predictions(get_db(), _current_user())
+    )
+
+
+def _build_predictions(db, user):
     course_scope, course_params = _course_scope(user)
     school_year_row = db.execute(
         "SELECT value FROM settings WHERE key='academic_year'"
@@ -1577,7 +2513,7 @@ def predica():
                 "risk_level": risk_level,
             }
         )
-    return render_template("predica.html", predictions=predictions)
+    return predictions
 
 
 @bp.post("/settings/ai-suggest")
@@ -1679,7 +2615,7 @@ def users():
         "LEFT JOIN teachers t ON t.id=u.teacher_id "
         "LEFT JOIN students s ON s.id=u.student_id ORDER BY u.id"
     ).fetchall()
-    teachers = db.execute("SELECT id, name FROM teachers ORDER BY name").fetchall()
+    teachers = db.execute("SELECT id, name FROM teachers WHERE email <> 'unassigned@school.invalid' ORDER BY name").fetchall()
     students = db.execute("SELECT id, name FROM students ORDER BY name").fetchall()
     return render_template(
         "users.html", accounts=accounts, teachers=teachers, students=students,
@@ -1855,19 +2791,24 @@ def manage_classes():
         "COALESCE(SUM(CASE WHEN e.academic_year=? THEN 1 ELSE 0 END),0) AS current_year_count "
         "FROM courses c JOIN teachers t ON t.id=c.teacher_id "
         "LEFT JOIN enrollments e ON e.course_id=c.id "
-        "GROUP BY c.id ORDER BY c.name",
+        "GROUP BY c.id",
         (year_start,),
     ).fetchall()
+    classes = _sort_by_name(classes)
     rosters = {}
     for course in classes:
         rosters[course["id"]] = db.execute(
             "SELECT DISTINCT s.name,s.grade_level,e.academic_year "
             "FROM enrollments e JOIN students s ON s.id=e.student_id "
-            "WHERE e.course_id=? ORDER BY e.academic_year DESC,s.name",
+            "WHERE e.course_id=?",
             (course["id"],),
         ).fetchall()
+        rosters[course["id"]] = sorted(
+            rosters[course["id"]],
+            key=lambda r: (-r["academic_year"], _natural_key(r["name"])),
+        )
     teachers = db.execute(
-        "SELECT id,name,subject FROM teachers ORDER BY name"
+        "SELECT id,name,subject FROM teachers WHERE email <> 'unassigned@school.invalid' ORDER BY name"
     ).fetchall()
     return render_template(
         "manage_classes.html",
@@ -2145,14 +3086,83 @@ def delete_request(request_id):
     return redirect(url_for("views.portal", module=module))
 
 
+def _sync_class_enrollments(db):
+    """Every student whose class text matches a class is enrolled in it for the current year.
+
+    Rosters, attendance, grades and exports all work from enrollments; students typed in with only a
+    class name (e.g. "grade 4") would otherwise appear in no register. Safe to run repeatedly.
+    """
+    year = _export_year(db)
+    by_key = {}
+    for course in db.execute("SELECT id,name FROM courses").fetchall():
+        by_key.setdefault(_class_key(course["name"]), []).append(course["id"])
+    added = 0
+    for student in db.execute("SELECT id,grade_level FROM students WHERE grade_level<>''").fetchall():
+        for course_id in by_key.get(_class_key(student["grade_level"]), ()):
+            cursor = db.execute(
+                "INSERT OR IGNORE INTO enrollments (student_id,course_id,academic_year) VALUES (?,?,?)",
+                (student["id"], course_id, year),
+            )
+            added += cursor.rowcount
+    if added:
+        db.commit()
+    return added
+
+
+def _find_class(db, name):
+    wanted = _tr_lower(_clean_class_name(name))
+    for row in db.execute("SELECT id,name,code FROM courses").fetchall():
+        if _tr_lower(_clean_class_name(row["name"])) == wanted:
+            return row
+    return None
+
+
+def _unassigned_teacher_id(db):
+    row = db.execute(
+        "SELECT id FROM teachers WHERE email=?", (UNASSIGNED_TEACHER_EMAIL,)
+    ).fetchone()
+    if row:
+        return row["id"]
+    cursor = db.execute(
+        "INSERT INTO teachers (name,email,subject) VALUES (?,?,?)",
+        ("Unassigned", UNASSIGNED_TEACHER_EMAIL, ""),
+    )
+    return cursor.lastrowid
+
+
+def _new_class_code(db, name):
+    ascii_name = name.translate(str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU"))
+    base = re.sub(r"[^A-Za-z0-9]+", "-", ascii_name).strip("-").upper()[:30] or "CLASS"
+    code, n = f"CLS-{base}", 2
+    while db.execute("SELECT 1 FROM courses WHERE code=?", (code,)).fetchone():
+        code = f"CLS-{base}-{n}"
+        n += 1
+    return code
+
+
+def _get_or_create_class(db, raw_name):
+    """Return (course_id, created). A new level/section appears on first use."""
+    name = _clean_class_name(raw_name)
+    existing = _find_class(db, name)
+    if existing:
+        return existing["id"], False
+    cursor = db.execute(
+        "INSERT INTO courses (name,code,teacher_id) VALUES (?,?,?)",
+        (name, _new_class_code(db, name), _unassigned_teacher_id(db)),
+    )
+    return cursor.lastrowid, True
+
+
 def _load_attendance_students(db, course_id, attendance_date):
-    return db.execute(
+    _sync_class_enrollments(db)
+    return _sort_by_name(db.execute(
         "SELECT e.id AS enrollment_id,s.id AS student_id,s.name,s.grade_level,"
-        "a.status FROM enrollments e JOIN students s ON s.id=e.student_id "
+        "COALESCE(a.status,'Present') AS status,a.status IS NOT NULL AS recorded "
+        "FROM enrollments e JOIN students s ON s.id=e.student_id "
         "LEFT JOIN attendance a ON a.enrollment_id=e.id AND a.attendance_date=? "
-        "WHERE e.course_id=? ORDER BY s.name",
+        "WHERE e.course_id=?",
         (attendance_date, course_id),
-    ).fetchall()
+    ).fetchall())
 
 
 def _save_attendance_students(db, students, attendance_date):
@@ -2184,14 +3194,16 @@ def student_registration():
         "name": request.form.get("name", "").strip(),
         "email": request.form.get("email", "").strip().lower(),
         "course_id": request.form.get("course_id", "").strip(),
+        "class_name": _clean_class_name(request.form.get("class_name", "")),
         "father_phone": request.form.get("father_phone", "").strip(),
         "mother_phone": request.form.get("mother_phone", "").strip(),
         "father_occupation": request.form.get("father_occupation", "").strip(),
         "mother_occupation": request.form.get("mother_occupation", "").strip(),
     }
-    courses = db.execute(
-        "SELECT id,name,code FROM courses ORDER BY name"
-    ).fetchall()
+    courses = _sort_by_name(
+        db.execute("SELECT id,name,code FROM courses").fetchall()
+    )
+    _sync_class_enrollments(db)
     academic_year_row = db.execute(
         "SELECT value FROM settings WHERE key='academic_year'"
     ).fetchone()
@@ -2212,21 +3224,39 @@ def student_registration():
         (course for course in courses if course["id"] == registered_course_id),
         None,
     )
-    registered_students = db.execute(
+    enrolled_names = {}
+    for row in db.execute(
+        "SELECT e.student_id,c.name FROM enrollments e JOIN courses c ON c.id=e.course_id "
+        "WHERE e.academic_year=?",
+        (academic_year,),
+    ).fetchall():
+        enrolled_names.setdefault(row["student_id"], []).append(row["name"])
+    registered_students = []
+    wanted_key = _class_key(registered_course["name"]) if registered_course else None
+    for student in db.execute(
         "SELECT s.id,s.name,s.email,s.grade_level,s.father_name,s.father_phone,"
         "s.father_occupation,s.mother_name,s.mother_phone,s.mother_occupation,"
-        "s.home_address,s.profile_picture,"
-        "COALESCE((SELECT group_concat(c.name, ', ') FROM enrollments e "
-        "JOIN courses c ON c.id=e.course_id "
-        "WHERE e.student_id=s.id AND e.academic_year=?),s.grade_level) AS class_names "
-        "FROM students s "
-        "WHERE (? IS NULL OR EXISTS ("
-        "SELECT 1 FROM enrollments filtered "
-        "WHERE filtered.student_id=s.id AND filtered.academic_year=? "
-        "AND filtered.course_id=?)) "
-        "ORDER BY s.name",
-        (academic_year, registered_course_id, academic_year, registered_course_id),
-    ).fetchall()
+        "s.home_address,s.profile_picture FROM students s"
+    ).fetchall():
+        names = sorted(enrolled_names.get(student["id"], []), key=_natural_key)
+        keys = {_class_key(n) for n in names}
+        if student["grade_level"]:
+            keys.add(_class_key(student["grade_level"]))
+        record = dict(student)
+        record["class_names"] = ", ".join(names) or student["grade_level"] or ""
+        record["class_keys"] = "|".join(sorted(keys))
+        record["search_text"] = _fold(
+            f"{student['name']} {student['email'] or ''} {record['class_names']}"
+        )
+        record["matches"] = wanted_key is None or wanted_key in keys
+        registered_students.append(record)
+    registered_students = _sort_by_name(registered_students)
+    class_buttons, seen_keys = [], set()
+    for c in courses:
+        key = _class_key(c["name"])
+        if key not in seen_keys:
+            seen_keys.add(key)
+            class_buttons.append({"id": c["id"], "name": c["name"], "key": key})
     action = request.form.get("action", "register")
     attendance_enabled = _module_states(db)["attendance"]
     if action == "attendance" or (
@@ -2275,7 +3305,14 @@ def student_registration():
             or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", values["email"])
         ):
             errors.append("Enter a valid student email address.")
-        if selected_course_id is None:
+        new_class_name = values["class_name"]
+        if new_class_name:
+            if len(new_class_name) > 120:
+                errors.append("Class name must contain 1–120 characters.")
+            else:
+                values["course_id"] = ""
+                selected_course_id = None
+        elif selected_course_id is None:
             errors.append("Choose a valid class.")
         elif not any(course["id"] == selected_course_id for course in courses):
             errors.append("Choose a valid class.")
@@ -2293,8 +3330,14 @@ def student_registration():
         ).fetchone():
             errors.append("A student with that email address already exists.")
 
+        class_created = False
         if not errors:
             try:
+                if new_class_name:
+                    selected_course_id, class_created = _get_or_create_class(db, new_class_name)
+                    courses = _sort_by_name(
+                        db.execute("SELECT id,name,code FROM courses").fetchall()
+                    )
                 cursor = db.execute(
                     "INSERT INTO students "
                     "(name,email,grade_level,father_phone,mother_phone,"
@@ -2317,6 +3360,8 @@ def student_registration():
                 )
                 db.commit()
                 flash("Student registered and enrolled in the selected class.", "success")
+                if class_created:
+                    flash("Class created automatically.", "success")
                 return redirect(
                     url_for("views.student_registration", tab="student")
                 )
@@ -2335,6 +3380,7 @@ def student_registration():
         attendance_students=students,
         registered_students=registered_students,
         registered_course_id=registered_course_id,
+        class_buttons=class_buttons,
         registered_course=registered_course,
         academic_year_label=configured_year,
         attendance_enabled=attendance_enabled,
@@ -2348,11 +3394,11 @@ def attendance_roster():
     db = get_db()
     user = _current_user()
     course_scope, course_params = _course_scope(user)
-    courses = db.execute(
+    courses = _sort_by_name(db.execute(
         "SELECT c.id,c.name,c.code FROM courses c WHERE 1=1"
-        + course_scope + " ORDER BY c.name",
+        + course_scope,
         course_params,
-    ).fetchall()
+    ).fetchall())
     course_id = _optional_int(request.values.get("course_id"))
     class_name = request.values.get("class_name", "").strip()
     if course_id is None and class_name:
@@ -2405,14 +3451,16 @@ def attendance_roster():
 @bp.route("/gradebook", methods=("GET", "POST"))
 @roles_required(*ACADEMIC_WRITE_ROLES)
 def gradebook():
+    _require_module("gradebook")
     db = get_db()
+    _sync_class_enrollments(db)
     user = _current_user()
     course_scope, course_params = _course_scope(user)
-    courses = db.execute(
+    courses = _sort_by_name(db.execute(
         "SELECT c.id,c.name,c.code FROM courses c WHERE 1=1"
-        + course_scope + " ORDER BY c.name",
+        + course_scope,
         course_params,
-    ).fetchall()
+    ).fetchall())
     course_id = _optional_int(request.values.get("course_id"))
     exam_name = request.values.get("exam_name", "Exam").strip()
     graded_on = request.values.get("graded_on", date.today().isoformat()).strip()
@@ -2630,6 +3678,36 @@ def delete_staff_update(update_id):
     return redirect(url_for("views.staff_updates"))
 
 
+def _resource_allowed(role):
+    return {
+        "super_admin": set(RESOURCES),
+        "admin": set(RESOURCES),
+        "manager": set(RESOURCES),
+        "teacher": {"students", "courses", "grades", "attendance"},
+    }.get(role, set())
+
+
+def _resource_records(db, resource, user):
+    """Rows a user may see in a /manage list (shared with the exports)."""
+    definition = RESOURCES[resource]
+    query = definition["select"]
+    params = ()
+    if user["role"] == "teacher":
+        if not user["teacher_id"]:
+            abort(403)
+        if resource == "students":
+            query = (
+                "SELECT DISTINCT s.id,s.name,s.grade_level,"
+                "CASE WHEN s.gender IN ('Male','Female') THEN s.gender ELSE '' END AS gender "
+                "FROM students s JOIN enrollments e ON e.student_id=s.id "
+                "JOIN courses c ON c.id=e.course_id WHERE c.teacher_id=? ORDER BY s.name"
+            )
+            params = (user["teacher_id"],)
+        else:
+            query, params = _teacher_course_filter(user, query)
+    return db.execute(query, params).fetchall()
+
+
 @bp.route("/manage/<resource>", methods=("GET", "POST"))
 @roles_required(*ROLES)
 def manage(resource):
@@ -2747,22 +3825,7 @@ def manage(resource):
                 db.rollback()
                 flash(_integrity_message(error), "error")
 
-    query = definition["select"]
-    params = ()
-    if role == "teacher":
-        if not user["teacher_id"]:
-            abort(403)
-        if resource == "students":
-            query = (
-                "SELECT DISTINCT s.id,s.name,s.grade_level,"
-                "CASE WHEN s.gender IN ('Male','Female') THEN s.gender ELSE '' END AS gender "
-                "FROM students s JOIN enrollments e ON e.student_id=s.id "
-                "JOIN courses c ON c.id=e.course_id WHERE c.teacher_id=? ORDER BY s.name"
-            )
-            params = (user["teacher_id"],)
-        else:
-            query, params = _teacher_course_filter(user, query)
-    records = db.execute(query, params).fetchall()
+    records = _resource_records(db, resource, user)
     form_values = dict(editing) if editing is not None else {}
     form_fields = _form_fields(definition, form_values, role, user)
     return render_template(
@@ -2823,6 +3886,7 @@ def delete_record(resource, record_id):
 @bp.route("/homework", methods=("GET", "POST"))
 @roles_required(*STAFF_ROLES, "student", "parent")
 def homework():
+    _require_module("homework")
     db = get_db()
     user = _current_user()
     if user["role"] in ("student", "parent"):
@@ -2971,19 +4035,35 @@ def portal(module):
                 flash("Request recorded. No external service was contacted.", "success")
             return redirect(url_for("views.portal", module=module))
         elif module == "bulletin" and len(description) <= 4000:
-            if record_id:
-                get_db().execute(
-                    "UPDATE announcements SET title=?,body=? WHERE id=?",
-                    (title, description, record_id),
-                )
+            period = request.form.get("period", "weekly").strip()
+            custom_end = request.form.get("expires_at", "").strip()
+            published_at = editing["published_at"] if record_id else _utc_now().strftime(_DB_TIME)
+            error = None
+            if period not in BULLETIN_PERIODS:
+                error = "Choose weekly, monthly or yearly."
+            elif custom_end and not _valid_datetime(custom_end):
+                error = "Enter a valid end date and time."
+            if not error:
+                expires_at, is_custom = _bulletin_expiry(period, published_at, custom_end)
+                if expires_at <= _utc_now().strftime(_DB_TIME):
+                    error = "The end date must be in the future. Choose a later end date or period."
+            if error:
+                flash(error, "error")
             else:
-                get_db().execute(
-                    "INSERT INTO announcements (title, body) VALUES (?, ?)",
-                    (title, description),
-                )
-            get_db().commit()
-            flash("Announcement updated." if record_id else "Announcement published.", "success")
-            return redirect(url_for("views.portal", module=module))
+                if record_id:
+                    get_db().execute(
+                        "UPDATE announcements SET title=?,body=?,period=?,expires_at=?,expiry_custom=? WHERE id=?",
+                        (title, description, period, expires_at, is_custom, record_id),
+                    )
+                else:
+                    get_db().execute(
+                        "INSERT INTO announcements (title,body,period,published_at,expires_at,expiry_custom) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (title, description, period, published_at, expires_at, is_custom),
+                    )
+                get_db().commit()
+                flash("Announcement updated." if record_id else "Announcement published.", "success")
+                return redirect(url_for("views.portal", module=module))
         elif module == "appointments" and _valid_datetime(starts_at):
             if record_id:
                 get_db().execute(
@@ -3005,8 +4085,10 @@ def portal(module):
             "SELECT id,title, starts_at, notes FROM appointments ORDER BY starts_at LIMIT 50"
         ).fetchall()
     elif module == "bulletin":
+        _archive_expired_bulletins(get_db())
         records = get_db().execute(
-            "SELECT id,title, body AS notes, published_at AS starts_at FROM announcements ORDER BY published_at DESC LIMIT 50"
+            "SELECT id,title, body AS notes, published_at AS starts_at,period,expires_at,expiry_custom "
+            "FROM announcements WHERE archived_at='' ORDER BY published_at DESC LIMIT 50"
         ).fetchall()
     else:
         records = get_db().execute(
@@ -3022,9 +4104,133 @@ def portal(module):
         or module in {"orders", "bulk-sms", "parent-meetings"}
         and role in {"super_admin", "manager"}
     )
+    archive_count = (
+        get_db().execute("SELECT COUNT(*) FROM announcements WHERE archived_at<>''").fetchone()[0]
+        if module == "bulletin" and role == "super_admin" else 0
+    )
     return render_template(
         "portal_module.html", module=module, records=records, editing=editing,
-        can_create=can_create,
+        can_create=can_create, archive_count=archive_count,
+        bulletin_periods=BULLETIN_PERIODS,
+    )
+
+
+@bp.post("/portal/bulletin/<int:record_id>/archive")
+@roles_required("super_admin", "manager", "admin")
+def bulletin_archive_now(record_id):
+    db = get_db()
+    cursor = db.execute(
+        "UPDATE announcements SET archived_at=?,archive_reason='manual' WHERE id=? AND archived_at=''",
+        (_utc_now().strftime(_DB_TIME), record_id),
+    )
+    if not cursor.rowcount:
+        abort(404)
+    db.commit()
+    flash("Bulletin moved to the archive.", "success")
+    return redirect(url_for("views.portal", module="bulletin"))
+
+
+@bp.route("/portal/bulletin/archive", methods=("GET", "POST"))
+@roles_required("super_admin")
+def bulletin_archive():
+    """Archive / storage of finished bulletins. Super Admin only."""
+    db = get_db()
+    _archive_expired_bulletins(db)
+    if request.method == "POST":
+        record_id = _optional_int(request.form.get("record_id"))
+        action = request.form.get("action", "")
+        row = db.execute(
+            "SELECT id,period FROM announcements WHERE id=? AND archived_at<>''", (record_id,)
+        ).fetchone() if record_id else None
+        if row is None:
+            abort(404)
+        if action == "restore":
+            now = _utc_now().strftime(_DB_TIME)
+            expires_at, _ = _bulletin_expiry(row["period"], now, "")
+            db.execute(
+                "UPDATE announcements SET archived_at='',archive_reason='',published_at=?,"
+                "expires_at=?,expiry_custom=0 WHERE id=?",
+                (now, expires_at, row["id"]),
+            )
+            flash("Bulletin restored and published again.", "success")
+        elif action == "delete":
+            db.execute("DELETE FROM announcements WHERE id=?", (row["id"],))
+            flash("Bulletin permanently deleted.", "success")
+        else:
+            abort(400)
+        db.commit()
+        return redirect(url_for("views.bulletin_archive"))
+    records = db.execute(
+        "SELECT id,title,body,period,published_at,expires_at,expiry_custom,archived_at,archive_reason "
+        "FROM announcements WHERE archived_at<>'' ORDER BY archived_at DESC"
+    ).fetchall()
+    return render_template("bulletin_archive.html", records=records)
+
+
+@bp.get("/search")
+@roles_required(*ROLES)
+def global_search():
+    """Live search for the navbar: students and teachers the user may see (pages are filtered in the browser)."""
+    query = _fold(request.args.get("q", "")[:60])
+    result = {"students": [], "teachers": []}
+    if not query:
+        return jsonify(result)
+    db = get_db()
+    user = _current_user()
+    role = user["role"]
+    if role in {"super_admin", "manager", "admin", "teacher"}:
+        if role == "teacher":
+            if not user["teacher_id"]:
+                return jsonify(result)
+            rows = db.execute(
+                "SELECT DISTINCT s.id,s.name,s.email,s.grade_level FROM students s "
+                "JOIN enrollments e ON e.student_id=s.id JOIN courses c ON c.id=e.course_id "
+                "WHERE c.teacher_id=?", (user["teacher_id"],),
+            ).fetchall()
+            link = url_for("views.manage", resource="students")
+        else:
+            rows = db.execute("SELECT id,name,email,grade_level FROM students").fetchall()
+            link = None
+        hits = [r for r in rows if query in _fold(f"{r['name']} {r['email'] or ''} {r['grade_level'] or ''}")]
+        for r in _sort_by_name(hits)[:8]:
+            result["students"].append({
+                "title": r["name"], "note": r["grade_level"] or "",
+                "url": link or url_for("views.student_registration", tab="student", q=r["name"]),
+            })
+    if role in {"super_admin", "manager", "admin"} and _module_states(db)["teachers"]:
+        rows = db.execute(
+            "SELECT id,name,email,subject FROM teachers WHERE email<>?", (UNASSIGNED_TEACHER_EMAIL,)
+        ).fetchall()
+        hits = [r for r in rows if query in _fold(f"{r['name']} {r['email']} {r['subject'] or ''}")]
+        for r in _sort_by_name(hits)[:8]:
+            result["teachers"].append({
+                "title": r["name"], "note": r["subject"] or "",
+                "url": url_for("views.manage", resource="teachers"),
+            })
+    response = jsonify(result)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@bp.get("/export/bulletins")
+@roles_required(*STAFF_ROLES)
+def export_bulletins():
+    db = get_db()
+    _archive_expired_bulletins(db)
+    want_archive = request.args.get("archived") == "1"
+    if want_archive and _current_user()["role"] != "super_admin":
+        abort(403)
+    rows = db.execute(
+        "SELECT title,body,period,published_at,expires_at,archived_at,archive_reason "
+        "FROM announcements WHERE archived_at" + ("<>''" if want_archive else "=''")
+        + " ORDER BY published_at DESC"
+    ).fetchall()
+    headers = [_t(h) for h in (
+        "Title", "Announcement", "Period", "Published", "Ends", "Archived", "Reason")]
+    out = [(r[0], r[1], _t(r[2].capitalize()), r[3], r[4], r[5], r[6]) for r in rows]
+    return download(
+        "bulletin_archive" if want_archive else "bulletins",
+        [(_t("Weekly Bulletin"), headers, out)],
     )
 
 
@@ -3054,6 +4260,7 @@ def delete_calendar_record(kind, record_id):
 @bp.route("/timetable", methods=("GET", "POST"))
 @roles_required(*STAFF_ROLES, "student", "parent")
 def timetable():
+    _require_module("timetable")
     db = get_db()
     user = _current_user()
     if user["role"] in ("student", "parent"):

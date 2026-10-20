@@ -1,7 +1,8 @@
 {% extends "base.html" %}
+{% from "_export_menu.html" import export_menu with context %}
 {% block title %}{{ 'Homework tracker'|translate(language) }} · {{ school_name }}{% endblock %}
 {% block content %}
-  <section class="page-title-row"><div><span class="eyebrow">{{ 'Student Operations'|translate(language) }}</span><h1>{{ 'Homework tracker'|translate(language) }}</h1><p class="muted">{{ 'Assignments and due dates for your classes.'|translate(language) }}</p></div></section>
+  <section class="page-title-row"><div><span class="eyebrow">{{ 'Student Operations'|translate(language) }}</span><h1>{{ 'Homework tracker'|translate(language) }}</h1><p class="muted">{{ 'Assignments and due dates for your classes.'|translate(language) }}</p></div>{{ export_menu(url_for('views.export_homework')) }}</section>
   {% if editable %}<section class="portal-card homework-form-card"><h2>{{ ('Edit homework' if editing else 'Assign homework')|translate(language) }}</h2><form method="post" class="homework-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>{{ 'Class'|translate(language) }}<select name="course_id" required><option value="">{{ 'Choose a class'|translate(language) }}</option>{% for course in courses %}<option value="{{ course.id }}" {% if editing and editing.course_id == course.id %}selected{% endif %}>{{ course.name }}</option>{% endfor %}</select></label>

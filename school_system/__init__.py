@@ -8,6 +8,9 @@ from flask import Flask, session, url_for
 from .db import get_db, init_db
 
 
+APP_VERSION = "2.1-2026-10-20"
+
+
 def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
     app.config.from_mapping(
@@ -37,6 +40,10 @@ def create_app(test_config=None):
 
     with app.app_context():
         init_db()
+        from .db import get_db as _get_db
+        from .views import _sync_class_enrollments
+
+        _sync_class_enrollments(_get_db())
 
     from .auth import bp as auth_bp
     from .views import bp as views_bp
@@ -52,7 +59,7 @@ def create_app(test_config=None):
         from .db import get_db
 
         get_db().execute("SELECT 1")
-        return {"status": "ok"}, 200
+        return {"status": "ok", "version": APP_VERSION}, 200
 
     from .views import (
         INDEX_LAYOUTS,
@@ -185,6 +192,11 @@ def create_app(test_config=None):
                 )
             elif endpoint == "views.attendance_roster" and not enabled_modules["attendance"]:
                 continue
+            elif endpoint in {
+                "views.homework": 1, "views.timetable": 1,
+                "views.gradebook": 1, "views.predica": 1,
+            } and not enabled_modules[endpoint.split(".")[1]]:
+                continue
             elif endpoint in {"views.summer_school", "views.summer_school_archive"} and not enabled_modules["summer_school"]:
                 continue
             elif endpoint == "views.boarding_management" and not enabled_modules["boarding"]:
@@ -285,6 +297,7 @@ def create_app(test_config=None):
             "enabled_modules": enabled_modules,
             "index_layout": index_layout,
             "languages": LANGUAGES,
+            "app_version": APP_VERSION,
             "landing_settings": all_settings,
             "brand_settings": {
                 key: all_settings[key]

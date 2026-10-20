@@ -16,7 +16,7 @@
     .module-status.enabled{color:#16803c}
     .module-status.disabled{color:#b42318}
   </style>
-  <section class="page-title-row"><div><span class="eyebrow">SUPER ADMINISTRATION</span><h1>{{ 'School settings'|translate(language) }}</h1><p class="muted">{{ 'Manage portal branding, public landing content, language, and optional AI assistance.'|translate(language) }}</p></div></section>
+  <section class="page-title-row"><div><span class="eyebrow">SUPER ADMINISTRATION</span><h1>{{ 'School settings'|translate(language) }}</h1><p class="muted">{{ 'Manage portal branding, public landing content, language, and optional AI assistance.'|translate(language) }}</p></div><a class="button-small" href="{{ url_for('views.interface_settings') }}">{{ 'Interface control'|translate(language) }}</a></section>
   <section class="portal-card settings-card">
     <form method="post" enctype="multipart/form-data" class="settings-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

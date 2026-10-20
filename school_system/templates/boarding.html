@@ -1,8 +1,10 @@
 {% extends "base.html" %}
+{% from "_export_menu.html" import export_menu with context %}
 {% block title %}{{ 'Boarding & Hostel'|translate(language) }} · {{ school_name }}{% endblock %}
 {% block content %}
   <section class="page-title-row">
     <div><span class="eyebrow">{{ 'RESTRICTED ADMINISTRATION'|translate(language) }}</span><h1>{{ 'Boarding & Hostel'|translate(language) }}</h1><p class="muted">{{ academic_year }} · {{ 'Manage boarding and day-student assignments.'|translate(language) }}</p></div>
+      {{ export_menu(url_for('views.export_boarding')) }}
   </section>
   <div class="admin-grid">
     <section class="portal-card user-form-card">

@@ -1,0 +1,24 @@
+{#- Super-admin authored announcements and custom blocks, shown on every dashboard. -#}
+{% macro render_custom_blocks(blocks) %}
+  {% if blocks %}
+    <style>
+      .cblocks{display:grid;gap:12px;margin:0 0 18px}
+      .cblock{display:grid;gap:6px;padding:14px 16px;border-radius:14px;border:1px solid var(--cb,#1758a6);border-left-width:6px;background:var(--cb-bg,#edf4ff)}
+      .cblock h3{margin:0;font-size:1rem}.cblock p{margin:0;white-space:pre-line}
+      .cblock .cblock-kind{font-size:.68rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--cb,#1758a6)}
+      .cblock a.cblock-link{justify-self:start;margin-top:4px;padding:7px 12px;border-radius:9px;background:var(--cb,#1758a6);color:#fff;text-decoration:none;font-weight:700;font-size:.85rem}
+      .cblock.tone-success{--cb:#16803c;--cb-bg:#eaf7ee}.cblock.tone-warning{--cb:#946200;--cb-bg:#fff8df}.cblock.tone-danger{--cb:#b42318;--cb-bg:#fff0ef}
+      .cblock.kind-block{background:#fff}
+    </style>
+    <section class="cblocks" aria-label="{{ 'Announcements'|translate(language) }}">
+      {% for b in blocks %}
+        <article class="cblock tone-{{ b.tone }} kind-{{ b.kind }}">
+          <span class="cblock-kind">{{ ('Announcement' if b.kind == 'announcement' else 'Custom block')|translate(language) }}</span>
+          <h3>{{ b.title }}</h3>
+          {% if b.body %}<p>{{ b.body }}</p>{% endif %}
+          {% if b.link_url %}<a class="cblock-link" href="{{ b.link_url }}" {% if b.link_url.startswith('http') %}target="_blank" rel="noopener noreferrer"{% endif %}>{{ b.link_label or ('Open'|translate(language)) }}</a>{% endif %}
+        </article>
+      {% endfor %}
+    </section>
+  {% endif %}
+{% endmacro %}

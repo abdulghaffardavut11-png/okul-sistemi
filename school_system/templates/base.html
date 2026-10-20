@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ language or 'en' }}" dir="{{ 'rtl' if language in ('ar',) else 'ltr' }}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -13,6 +13,7 @@
     {% if brand_settings.get('logo_filename') %}<meta property="og:image" content="{{ site_url }}{{ url_for('views.uploaded_logo', filename=brand_settings.get('logo_filename')) }}">{% endif %}
     <title>{% block title %}{{ school_name }}{% endblock %}</title>
     <link rel="icon" href="{% if brand_settings.get('logo_filename') %}{{ url_for('views.uploaded_logo', filename=brand_settings.get('logo_filename')) }}{% else %}{{ url_for('static', filename='favicon.svg') }}{% endif %}">
+    <script src="{{ url_for('static', filename='scroll-memory.js') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='portal.css') }}">
     <style>
@@ -31,7 +32,7 @@
             </span>
             <span class="school-name">{{ school_name }}</span>
           </a>
-          <div class="sidebar-scroll">
+          <div class="sidebar-scroll" data-scroll-keep="sidebar" data-scroll-global>
             {% set nav_state = namespace(category=None) %}
             {% for item in nav_items %}
               {% if item.category != nav_state.category %}
@@ -57,13 +58,14 @@
         <div class="portal-main">
           <header class="topbar">
             <button class="icon-button menu-toggle" id="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="true">☰</button>
+            {% include "_global_search.html" %}
             <div class="topbar-spacer"></div>
             <form class="language-select" method="post" action="{{ url_for('views.change_language') }}">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <label for="portal-language" class="sr-only">Language</label>
               <select id="portal-language" name="language" aria-label="Language" onchange="this.form.submit()">
                 {% for code, label in languages.items() %}
-                  <option value="{{ code }}" {% if language == code %}selected{% endif %}>{{ code|upper }}</option>
+                  <option value="{{ code }}" {% if language == code %}selected{% endif %}>{{ label }}</option>
                 {% endfor %}
               </select>
             </form>
@@ -83,17 +85,17 @@
           </header>
           <main class="page-content">
             {% for category, message in get_flashed_messages(with_categories=true) %}
-              <p class="flash {{ category }}" role="status">{{ message }}</p>
+              <p class="flash {{ category }}" role="status">{{ message|translate(language) }}</p>
             {% endfor %}
             {% block content %}{% endblock %}
           </main>
-          <footer class="page-footer">{{ school_name }} <span>·</span> Secure School Portal</footer>
+          <footer class="page-footer">{{ school_name }} <span>·</span> Secure School Portal <span>·</span> v{{ app_version }}</footer>
         </div>
       </div>
       <script src="{{ url_for('static', filename='portal.js') }}" defer></script>
     {% else %}
       {% for category, message in get_flashed_messages(with_categories=true) %}
-        <p class="flash {{ category }} login-flash" role="status">{{ message }}</p>
+        <p class="flash {{ category }} login-flash" role="status">{{ message|translate(language) }}</p>
       {% endfor %}
       {% block public_content %}{% endblock %}
     {% endif %}

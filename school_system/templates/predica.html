@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_export_menu.html" import export_menu with context %}
 {% block title %}{{ 'Performance Forecast'|translate(language) }} · {{ school_name }}{% endblock %}
 {% block content %}
   <section class="page-title-row">
@@ -7,6 +8,7 @@
       <h1>{{ 'Performance Forecast'|translate(language) }}</h1>
       <p class="muted">{{ 'A transparent estimate based on recorded grades and attendance for the current academic year.'|translate(language) }}</p>
     </div>
+      {{ export_menu(url_for('views.export_predica')) }}
   </section>
   <section class="portal-card">
     {% if predictions %}

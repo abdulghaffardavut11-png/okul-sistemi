@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Interface control'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <style>
+    .ic-nav{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px}
+    .ic-nav a{padding:8px 14px;border-radius:999px;border:1px solid var(--line,#e4e7ec);text-decoration:none;font-weight:700;font-size:.85rem;color:inherit;background:#fff}
+    .ic-card{margin-bottom:18px;scroll-margin-top:12px}
+    .ic-card h2{margin:0 0 4px}.ic-hint{margin:0 0 12px;color:var(--muted,#667085);font-size:.88rem}
+    .ic-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--line,#e4e7ec)}
+    .ic-row:first-of-type{border-top:0}
+    .ic-row .ic-name{flex:1 1 180px;font-weight:700}
+    .ic-row.off .ic-name{opacity:.5;text-decoration:line-through}
+    .ic-row input[type=text]{flex:1 1 140px;min-width:0}
+    .ic-row input.ic-icon{flex:0 0 80px}
+    .ic-state{font-size:.72rem;font-weight:800;padding:3px 9px;border-radius:999px}
+    .ic-state.on{background:#eaf7ee;color:#16803c}.ic-state.off{background:#f2f4f7;color:#667085}
+    .ic-actions{display:flex;flex-wrap:wrap;gap:6px}
+    .ic-form{display:grid;gap:10px}
+    .ic-form label{display:grid;gap:4px;font-weight:700;font-size:.85rem}
+    .ic-roles{display:flex;flex-wrap:wrap;gap:8px 14px}
+    .ic-roles label{display:inline-flex;grid-template-columns:none;align-items:center;gap:6px;font-weight:600}
+    .ic-two{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+  </style>
+  <section class="page-title-row">
+    <div><span class="eyebrow">{{ 'Super Admin'|translate(language) }}</span><h1>{{ 'Interface control'|translate(language) }}</h1>
+      <p class="muted">{{ 'Show, hide, rename and add anything on the dashboard and the side menu.'|translate(language) }}</p></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="button-small secondary-button" href="{{ url_for('views.settings') }}">{{ 'School branding & settings'|translate(language) }}</a><a class="button-small" href="{{ url_for('views.translation_settings') }}">{{ 'Translations'|translate(language) }}</a></div>
+  </section>
+  <nav class="ic-nav">
+    <a href="#dashboard">{{ 'Dashboard blocks'|translate(language) }}</a>
+    <a href="#custom">{{ 'Announcements & custom blocks'|translate(language) }}</a>
+    <a href="#menu">{{ 'Side menu'|translate(language) }}</a>
+    <a href="#modules">{{ 'Modules'|translate(language) }}</a>
+  </nav>
+
+  {# ---------- dashboard blocks ---------- #}
+  <section class="portal-card ic-card" id="dashboard">
+    <h2>{{ 'Dashboard blocks'|translate(language) }}</h2>
+    <p class="ic-hint">{{ 'Turn any built-in card on or off. Changes apply to everyone immediately.'|translate(language) }}</p>
+    {% for key, label, on in dash_blocks %}
+      <form method="post" class="ic-row {{ '' if on else 'off' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="toggle_dash_block"><input type="hidden" name="key" value="{{ key }}"><input type="hidden" name="anchor" value="dashboard">
+        <span class="ic-name">{{ label|translate(language) }}</span>
+        <span class="ic-state {{ 'on' if on else 'off' }}">{{ ('Shown' if on else 'Hidden')|translate(language) }}</span>
+        <button class="button-small secondary-button" type="submit">{{ ('Hide' if on else 'Show')|translate(language) }}</button>
+      </form>
+    {% endfor %}
+    <h3 style="margin:16px 0 4px">{{ 'Statistics cards'|translate(language) }}</h3>
+    {% for key, label, on in stat_cards %}
+      <form method="post" class="ic-row {{ '' if on else 'off' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="toggle_dash_block"><input type="hidden" name="key" value="{{ key }}"><input type="hidden" name="anchor" value="dashboard">
+        <span class="ic-name">{{ label|translate(language) }}</span>
+        <span class="ic-state {{ 'on' if on else 'off' }}">{{ ('Shown' if on else 'Hidden')|translate(language) }}</span>
+        <button class="button-small secondary-button" type="submit">{{ ('Hide' if on else 'Show')|translate(language) }}</button>
+      </form>
+    {% endfor %}
+  </section>
+
+  {# ---------- custom announcements / blocks ---------- #}
+  <section class="portal-card ic-card" id="custom">
+    <h2>{{ 'Announcements & custom blocks'|translate(language) }}</h2>
+    <p class="ic-hint">{{ 'Write your own announcement or block. It appears at the top of the dashboard for the roles you choose.'|translate(language) }}</p>
+    <form method="post" class="ic-form" action="{{ url_for('views.interface_settings') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="save_block"><input type="hidden" name="anchor" value="custom">
+      {% if editing %}<input type="hidden" name="item_id" value="{{ editing.id }}"><strong>{{ 'Editing'|translate(language) }}: {{ editing.title }}</strong>{% endif %}
+      <div class="ic-two">
+        <label>{{ 'Type'|translate(language) }}
+          <select name="kind">{% for k in block_kinds %}<option value="{{ k }}" {% if editing and editing.kind == k %}selected{% endif %}>{{ ('Announcement' if k == 'announcement' else 'Custom block')|translate(language) }}</option>{% endfor %}</select></label>
+        <label>{{ 'Color'|translate(language) }}
+          <select name="tone">{% for t in block_tones %}<option value="{{ t }}" {% if editing and editing.tone == t %}selected{% endif %}>{{ t|capitalize|translate(language) }}</option>{% endfor %}</select></label>
+      </div>
+      <label>{{ 'Title'|translate(language) }}<input name="title" maxlength="120" required value="{{ editing.title if editing else '' }}"></label>
+      <label>{{ 'Message'|translate(language) }}<textarea name="body" rows="3" maxlength="2000">{{ editing.body if editing else '' }}</textarea></label>
+      <div class="ic-two">
+        <label>{{ 'Button text (optional)'|translate(language) }}<input name="link_label" maxlength="60" value="{{ editing.link_label if editing else '' }}"></label>
+        <label>{{ 'Button link (optional)'|translate(language) }}<input name="link_url" maxlength="300" placeholder="https://… {{ 'or'|translate(language) }} /homework" value="{{ editing.link_url if editing else '' }}"></label>
+      </div>
+      <div class="ic-two">
+        <label>{{ 'Show from (optional)'|translate(language) }}<input type="date" name="starts_on" value="{{ editing.starts_on if editing else '' }}"></label>
+        <label>{{ 'Show until (optional)'|translate(language) }}<input type="date" name="ends_on" value="{{ editing.ends_on if editing else '' }}"></label>
+      </div>
+      <div><strong style="font-size:.85rem">{{ 'Who can see it? (none selected = everyone)'|translate(language) }}</strong>
+        <div class="ic-roles">{% for r in all_roles %}<label><input type="checkbox" name="audience" value="{{ r }}" {% if r in editing_roles %}checked{% endif %}> {{ r.replace('_',' ')|title }}</label>{% endfor %}</div></div>
+      <div class="ic-actions"><button type="submit">{{ ('Save changes' if editing else 'Add block')|translate(language) }}</button>
+        {% if editing %}<a class="button-small secondary-button" href="{{ url_for('views.interface_settings', _anchor='custom') }}">{{ 'Cancel'|translate(language) }}</a>{% endif %}</div>
+    </form>
+    <h3 style="margin:18px 0 4px">{{ 'Your blocks'|translate(language) }}</h3>
+    {% for b in blocks %}
+      <form method="post" class="ic-row {{ '' if b.is_active else 'off' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="item_id" value="{{ b.id }}"><input type="hidden" name="anchor" value="custom">
+        <span class="ic-name">{{ b.title }}<br><small class="muted">{{ ('Announcement' if b.kind == 'announcement' else 'Custom block')|translate(language) }} · {{ 'Everyone'|translate(language) if b.audience == 'all' else b.audience }}</small></span>
+        <span class="ic-actions">
+          <button class="button-small secondary-button" name="action" value="block_up" type="submit" aria-label="{{ 'Move up'|translate(language) }}">↑</button>
+          <button class="button-small secondary-button" name="action" value="block_down" type="submit" aria-label="{{ 'Move down'|translate(language) }}">↓</button>
+          <a class="button-small secondary-button" href="{{ url_for('views.interface_settings', edit_block=b.id, _anchor='custom') }}">{{ 'Edit'|translate(language) }}</a>
+          <button class="button-small secondary-button" name="action" value="block_toggle" type="submit">{{ ('Hide' if b.is_active else 'Show')|translate(language) }}</button>
+          <button class="button-small danger-button" name="action" value="block_delete" type="submit">{{ 'Delete'|translate(language) }}</button>
+        </span>
+      </form>
+    {% else %}<p class="muted">{{ 'No custom blocks yet.'|translate(language) }}</p>{% endfor %}
+  </section>
+
+  {# ---------- side menu ---------- #}
+  <section class="portal-card ic-card" id="menu">
+    <h2>{{ 'Side menu'|translate(language) }}</h2>
+    <p class="ic-hint">{{ 'Rename titles and groups, change the icon, reorder, hide or remove menu items.'|translate(language) }}</p>
+    {% for item in menu_items %}
+      <form method="post" class="ic-row {{ '' if item.is_active else 'off' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="item_id" value="{{ item.id }}"><input type="hidden" name="anchor" value="menu">
+        <input type="text" name="title" value="{{ item.title }}" maxlength="100" aria-label="{{ 'Title'|translate(language) }}" required>
+        <input type="text" name="category" value="{{ item.category }}" maxlength="100" aria-label="{{ 'Group'|translate(language) }}" required>
+        <input type="text" class="ic-icon" name="icon" value="{{ item.icon }}" maxlength="50" aria-label="{{ 'Icon'|translate(language) }}" required>
+        <span class="ic-actions">
+          <button class="button-small" name="action" value="save_item" type="submit">{{ 'Save'|translate(language) }}</button>
+          <button class="button-small secondary-button" name="action" value="move_up" type="submit" aria-label="{{ 'Move up'|translate(language) }}">↑</button>
+          <button class="button-small secondary-button" name="action" value="move_down" type="submit" aria-label="{{ 'Move down'|translate(language) }}">↓</button>
+          <button class="button-small secondary-button" name="action" value="toggle_item" type="submit">{{ ('Hide' if item.is_active else 'Show')|translate(language) }}</button>
+          <button class="button-small danger-button" name="action" value="delete_item" type="submit">{{ 'Delete'|translate(language) }}</button>
+        </span>
+      </form>
+    {% endfor %}
+    {% if addable %}
+      <form method="post" class="ic-row" style="margin-top:10px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="add_item"><input type="hidden" name="anchor" value="menu">
+        <select name="target" style="flex:1 1 200px">{% for key, t in addable %}<option value="{{ key }}">{{ t.title|translate(language) }} · {{ t.category|translate(language) }}</option>{% endfor %}</select>
+        <button class="button-small" type="submit">{{ 'Add menu item'|translate(language) }}</button>
+      </form>
+    {% endif %}
+  </section>
+
+  {# ---------- modules ---------- #}
+  <section class="portal-card ic-card" id="modules">
+    <h2>{{ 'Modules'|translate(language) }}</h2>
+    <p class="ic-hint">{{ 'Turning a module off hides its menu item and closes its pages for everyone.'|translate(language) }}</p>
+    {% for name, on in modules.items() %}
+      <form method="post" class="ic-row {{ '' if on else 'off' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="toggle_module"><input type="hidden" name="module_name" value="{{ name }}"><input type="hidden" name="anchor" value="modules">
+        <span class="ic-name">{{ name.replace('_',' ')|title|translate(language) }}</span>
+        <span class="ic-state {{ 'on' if on else 'off' }}">{{ ('Enabled' if on else 'Disabled')|translate(language) }}</span>
+        <button class="button-small secondary-button" type="submit">{{ ('Disable' if on else 'Enable')|translate(language) }}</button>
+      </form>
+    {% endfor %}
+  </section>
+{% endblock %}

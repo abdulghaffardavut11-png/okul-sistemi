@@ -1,9 +1,11 @@
 {% extends "base.html" %}
+{% from "_export_menu.html" import export_menu with context %}
 {% block title %}{{ 'Gradebook'|translate(language) }} · {{ school_name }}{% endblock %}
 {% block content %}
   <section class="page-title-row">
     <div><span class="eyebrow">{{ 'Student Operations'|translate(language) }}</span><h1>{{ 'Gradebook'|translate(language) }}</h1>
       <p class="muted">{{ 'Choose a subject, name the exam, and enter student scores in one register.'|translate(language) }}</p></div>
+      {{ export_menu(url_for('views.export_gradebook', course_id=selected_course.id if selected_course else None)) }}
   </section>
   <section class="portal-card gradebook-card">
     <form method="get" class="gradebook-filter">

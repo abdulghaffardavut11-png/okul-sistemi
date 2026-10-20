@@ -1,7 +1,8 @@
 {% extends "base.html" %}
+{% from "_export_menu.html" import export_menu with context %}
 {% block title %}{{ module|replace('-', ' ')|title|translate(language) }} · {{ school_name }}{% endblock %}
 {% block content %}
-  <section class="page-title-row"><div><span class="eyebrow">SCHOOL PORTAL</span><h1>{{ module|replace('-', ' ')|title|translate(language) }}</h1><p class="muted">{{ 'School information and service workspace.'|translate(language) }}</p></div></section>
+  <section class="page-title-row"><div><span class="eyebrow">SCHOOL PORTAL</span><h1>{{ module|replace('-', ' ')|title|translate(language) }}</h1><p class="muted">{{ 'School information and service workspace.'|translate(language) }}</p></div>{% if module == 'bulletin' %}<div style="display:flex;gap:8px;flex-wrap:wrap">{{ export_menu(url_for('views.export_bulletins')) }}{% if session.get('role') == 'super_admin' %}<a class="button-small secondary-button" href="{{ url_for('views.bulletin_archive') }}">🗄 {{ 'Archive / Storage'|translate(language) }} ({{ archive_count }})</a>{% endif %}</div>{% endif %}</section>
   {% if module == 'bulk-sms' %}<section class="portal-card"><p class="muted">{{ 'Internal request tracking only. No SMS messages are sent because a messaging provider is not configured.'|translate(language) }}</p></section>{% endif %}
   {% if can_create %}
     <section class="portal-card calendar-form-card"><h2>{{ ('Add appointment' if module == 'appointments' else 'Publish announcement' if module == 'bulletin' else 'Create request')|translate(language) }}</h2>
@@ -10,18 +11,26 @@
         <label>{{ ('Recipient group' if module == 'bulk-sms' else 'Title')|translate(language) }}<input name="title" maxlength="160" value="{{ editing.title if editing else '' }}" required></label>
         {% if module == 'appointments' %}<label>{{ 'Date and time'|translate(language) }}<input name="starts_at" type="datetime-local" value="{{ editing.starts_at if editing else '' }}" required></label>{% endif %}
         <label>{{ ('SMS message draft' if module == 'bulk-sms' else 'Notes' if module == 'appointments' else 'Announcement' if module == 'bulletin' else 'Request details')|translate(language) }}<textarea name="description" rows="3" maxlength="4000">{{ (editing.notes if module == 'appointments' else editing.body) if editing else '' }}</textarea></label>
+        {% if module == 'bulletin' %}
+          <label>{{ 'Bulletin period'|translate(language) }}
+            <select name="period">{% for key, days in bulletin_periods.items() %}<option value="{{ key }}" {% if (editing.period if editing else 'weekly') == key %}selected{% endif %}>{{ key|capitalize|translate(language) }} ({{ days }} {{ 'days'|translate(language) }})</option>{% endfor %}</select></label>
+          <label>{{ 'Custom end date and time (optional)'|translate(language) }}
+            <input type="datetime-local" name="expires_at" value="{{ editing.expires_at[:16]|replace(' ', 'T') if editing and editing.expiry_custom else '' }}">
+            <small class="muted">{{ 'If empty, the end is calculated from the period: weekly 7 days, monthly 30 days, yearly 365 days. After the end, the bulletin moves to the archive automatically. Time is server time (UTC).'|translate(language) }}</small></label>
+        {% endif %}
         <button type="submit">{{ ('Save changes' if editing else 'Add to calendar') if module == 'appointments' else ('Save changes' if editing else 'Publish announcement') if module == 'bulletin' else 'Record request'|translate(language) }}</button>
         {% if editing %}<a class="cancel-link" href="{{ url_for('views.portal', module=module) }}">{{ 'Cancel'|translate(language) }}</a>{% endif %}
       </form>
     </section>
   {% endif %}
-  <section class="portal-card">{% if records %}<div class="event-list">{% for record in records %}<article class="event-item"><span class="event-date">{{ record.status if record.status is defined else record.starts_at[:10] }}</span><div class="request-content"><h2>{{ record.title }}</h2><p>{{ record.notes }}</p></div>
+  <section class="portal-card">{% if records %}<div class="event-list">{% for record in records %}<article class="event-item"><span class="event-date">{{ record.status if record.status is defined else record.starts_at[:10] }}</span><div class="request-content"><h2>{{ record.title }}</h2><p>{{ record.notes }}</p>{% if module == 'bulletin' %}<p class="muted"><small>{{ record.period|capitalize|translate(language) }} · {{ 'Archives on'|translate(language) }}: {{ record.expires_at[:16] if record.expires_at else ('Never'|translate(language)) }}{% if record.expiry_custom %} ({{ 'custom'|translate(language) }}){% endif %}</small></p>{% endif %}</div>
     {% if record.status is defined and session.get('role') in ('super_admin','manager','admin') %}
       <form method="post" action="{{ url_for('views.update_request_status', request_id=record.id) }}" class="request-status"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="module" value="{{ module }}"><select name="status" aria-label="{{ 'Request status'|translate(language) }}"><option {% if record.status == 'Open' %}selected{% endif %}>{{ 'Open'|translate(language) }}</option><option {% if record.status == 'In progress' %}selected{% endif %}>{{ 'In progress'|translate(language) }}</option><option {% if record.status == 'Complete' %}selected{% endif %}>{{ 'Complete'|translate(language) }}</option></select><button class="button-small secondary-button" type="submit">{{ 'Save'|translate(language) }}</button></form>
       <form method="post" action="{{ url_for('views.delete_request', request_id=record.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="module" value="{{ module }}"><button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button></form>
     {% endif %}
     {% if module in ('appointments', 'bulletin') and session.get('role') in ('super_admin','manager','admin','teacher') and (module == 'bulletin' or session.get('role') != 'teacher') %}
       <a class="text-link" href="{{ url_for('views.portal', module=module, edit=record.id) }}">{{ 'Edit'|translate(language) }}</a>
+      {% if module == 'bulletin' and session.get('role') in ('super_admin','manager','admin') %}<form method="post" action="{{ url_for('views.bulletin_archive_now', record_id=record.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small secondary-button" type="submit">{{ 'Archive'|translate(language) }}</button></form>{% endif %}
       <form method="post" action="{{ url_for('views.delete_calendar_record', kind=module, record_id=record.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button></form>
     {% endif %}
   </article>{% endfor %}</div>{% else %}<div class="card-empty"><span>◌</span><p>{{ 'This workspace is ready. No records have been added yet.'|translate(language) }}</p></div>{% endif %}</section>

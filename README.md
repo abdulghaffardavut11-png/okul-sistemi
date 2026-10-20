@@ -74,3 +74,51 @@ Render’s persistent disks are generally a paid feature. Railway and other host
 ```bash
 python3 -m unittest discover -v
 ```
+
+## Export (Dışa Aktar)
+
+Every list page has one **Export** menu (Excel `.xlsx`, CSV, Print). Routes live under `/export/...`
+(`/export/data/<resource>`, `/export/gradebook`, `/export/attendance`, `/export/homework`,
+`/export/timetable`, `/export/predica`, `/export/boarding`, `/export/student/<id>`). Access follows the
+same rules as the page: teachers get their own classes only, students/parents only their own record.
+Health reports and parent-meeting notes are never exported. Excel needs `openpyxl` (in requirements.txt).
+
+## Interface control (Süper Admin → Arayüz Yönetimi)
+
+`/settings/interface` (super admin only): show/hide every dashboard card and statistic, rename / regroup / re-icon /
+reorder / hide / delete / re-add side-menu items, switch modules on or off (closing their pages), and publish
+custom announcements or blocks (colour, optional button link, date window, audience by role) on the dashboards.
+Existing databases pick up the new `dashboard_blocks` table automatically on start-up.
+
+## Bulletin periods and archive
+
+Each bulletin is Weekly (7 days), Monthly (30 days) or Yearly (365 days). A custom end date/time, if entered,
+overrides the period. When the end passes, the bulletin is moved to **Archive / Storage** automatically (checked
+whenever the dashboard, bulletin list or archive is opened). The archive (`/portal/bulletin/archive`) is visible to the
+Super Admin only, who can restore (new period from now) or permanently delete. Bulletins that existed before this
+feature have no end date and never archive until edited. Times are server time (UTC).
+
+## Student list, live search and languages
+
+* **Student list** (Student Registration → Student): sortable A–Z table. Class buttons and the search box filter instantly;
+  class matching ignores case, spacing and Turkish letters (`Grade 4`, `grade  4`, `5. SINIF` all work).
+* **Live search** in the top bar (press `/`): students, teachers (role-scoped) and menu pages.
+* **Languages**: English, Türkçe, Français, العربية (RTL), Hausa, Twi (Akan), Fante, Eʋegbe (Ewe), Gã.
+  Super Admin → Interface control → Translations edits any language in the browser, exports the missing texts as
+  Excel/CSV for translators and imports them back. Edits are stored in the database and override the built-in text;
+  empty texts fall back to English (Fante falls back to Twi first).
+
+## Scroll memory
+
+`static/scroll-memory.js` (loaded on every page) keeps your place: back/forward and reload restore the page's scroll
+position, a form action that reloads the same page (save, delete, filter, language) returns you to where you pressed
+the button, and the side menu keeps its own scroll. On phones a student's profile opens as a bottom sheet instead of
+jumping to the top. Behaviour is checked by `tests/scroll_memory_check.js` (run automatically with the Python tests
+when Node is installed).
+
+## Classes and enrollments (important)
+
+* Classes saved as name `grade` + code `4` are renamed once to `Grade 4` on start-up.
+* A student whose class text matches a class (case/spacing/Turkish letters ignored) is enrolled automatically for the
+  current academic year, so attendance, grades, exports and the dashboard see them. Two classes with the same name
+  (e.g. `GRADE 5` and `Grade 5`) both receive the student – delete the duplicate in Class Management.

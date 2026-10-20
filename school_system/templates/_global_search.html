@@ -1,0 +1,92 @@
+<div class="global-search" role="search">
+  <style>
+    .global-search{position:relative;flex:1;min-width:0;max-width:460px}
+    .global-search input{width:100%;min-height:38px;padding:7px 12px 7px 34px;border:1px solid var(--line,#e4e7ec);border-radius:10px;background:#f8fafc url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%2366768a' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='5'/%3E%3Cpath d='m11 11 3.5 3.5'/%3E%3C/svg%3E") no-repeat 11px center;font:inherit;font-size:.85rem;color:var(--ink,#101828)}
+    .global-search input:focus{outline:2px solid var(--primary,#1758a6);background-color:#fff}
+    .gs-panel{position:absolute;left:0;right:0;top:44px;z-index:30;max-height:min(70vh,440px);overflow:auto;padding:6px;background:#fff;border:1px solid var(--line,#e4e7ec);border-radius:12px;box-shadow:0 14px 34px rgba(16,24,40,.18)}
+    .gs-group{margin:4px 0 2px;padding:6px 10px 2px;color:var(--muted,#667085);font-size:.66rem;font-weight:800;letter-spacing:.07em;text-transform:uppercase}
+    .gs-item{display:flex;justify-content:space-between;gap:10px;padding:9px 10px;border-radius:8px;color:inherit;text-decoration:none;font-size:.87rem}
+    .gs-item small{color:var(--muted,#667085);white-space:nowrap}
+    .gs-item:hover,.gs-item.gs-active{background:#eaf2ff}
+    .gs-empty{padding:12px;color:var(--muted,#667085);font-size:.85rem}
+    @media(max-width:500px){.global-search{max-width:none}}
+  </style>
+  <label for="global-search-input" class="sr-only">{{ 'Search'|translate(language) }}</label>
+  <input id="global-search-input" type="search" autocomplete="off" maxlength="60"
+    placeholder="{{ 'Search students, teachers, pages…'|translate(language) }}" aria-controls="gs-panel" aria-expanded="false">
+  <div class="gs-panel" id="gs-panel" hidden></div>
+  <script>
+    (function () {
+      const input = document.getElementById('global-search-input');
+      const panel = document.getElementById('gs-panel');
+      const searchUrl = {{ url_for('views.global_search')|tojson }};
+      const labels = {
+        pages: {{ 'Pages'|translate(language)|tojson }}, students: {{ 'Students'|translate(language)|tojson }},
+        teachers: {{ 'Teachers'|translate(language)|tojson }}, none: {{ 'No results'|translate(language)|tojson }}
+      };
+      const fold = (t) => (t || '').toLocaleLowerCase('tr').replace(/\s+/g, ' ').trim()
+        .replace(/ç/g, 'c').replace(/ğ/g, 'g').replace(/ı/g, 'i').replace(/ö/g, 'o').replace(/ş/g, 's').replace(/ü/g, 'u');
+      const pages = [...document.querySelectorAll('.sidebar .nav-link')].map((a) => ({
+        title: a.querySelector('span:not(.nav-icon)').textContent.trim(),
+        group: (a.closest('.nav-group').querySelector('.nav-heading') || {textContent: ''}).textContent.trim(),
+        url: a.getAttribute('href')
+      }));
+      let timer = null, serial = 0, active = -1;
+      const close = () => { panel.hidden = true; input.setAttribute('aria-expanded', 'false'); active = -1; };
+      const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+      const render = (groups) => {
+        panel.replaceChildren();
+        let count = 0;
+        groups.forEach(([title, items]) => {
+          if (!items.length) return;
+          panel.appendChild(el('div', 'gs-group', title));
+          items.forEach((item) => {
+            const a = el('a', 'gs-item'); a.href = item.url;
+            a.appendChild(el('span', '', item.title));
+            if (item.note) a.appendChild(el('small', '', item.note));
+            panel.appendChild(a); count += 1;
+          });
+        });
+        if (!count) panel.appendChild(el('div', 'gs-empty', labels.none));
+        panel.hidden = false; input.setAttribute('aria-expanded', 'true'); active = -1;
+      };
+      const query = () => {
+        const q = fold(input.value);
+        if (!q) { close(); return; }
+        const pageHits = pages.filter((p) => fold(p.title + ' ' + p.group).includes(q)).slice(0, 6);
+        render([[labels.pages, pageHits]]);             // instant: pages come from the menu already on screen
+        clearTimeout(timer);
+        const mine = ++serial;
+        timer = setTimeout(() => {
+          fetch(searchUrl + '?q=' + encodeURIComponent(input.value.trim()), {headers: {Accept: 'application/json'}, credentials: 'same-origin'})
+            .then((r) => (r.ok ? r.json() : {students: [], teachers: []}))
+            .then((data) => { if (mine === serial && fold(input.value) === q) render([[labels.pages, pageHits], [labels.students, data.students || []], [labels.teachers, data.teachers || []]]); })
+            .catch(() => {});
+        }, 140);
+      };
+      const move = (delta) => {
+        const links = [...panel.querySelectorAll('.gs-item')];
+        if (!links.length) return;
+        links.forEach((l) => l.classList.remove('gs-active'));
+        active = (active + delta + links.length) % links.length;
+        links[active].classList.add('gs-active'); links[active].scrollIntoView({block: 'nearest'});
+      };
+      input.addEventListener('input', query);
+      input.addEventListener('focus', () => { if (input.value.trim()) query(); });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+        else if (e.key === 'Escape') { close(); input.blur(); }
+        else if (e.key === 'Enter') {
+          const links = [...panel.querySelectorAll('.gs-item')];
+          const target = links[active] || links[0];
+          if (target) { e.preventDefault(); window.location.href = target.href; }
+        }
+      });
+      document.addEventListener('click', (e) => { if (!e.target.closest('.global-search')) close(); });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === '/' && !/input|textarea|select/i.test((document.activeElement || {}).tagName || '')) { e.preventDefault(); input.focus(); }
+      });
+    })();
+  </script>
+</div>

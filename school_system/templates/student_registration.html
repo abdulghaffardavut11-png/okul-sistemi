@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% from "_export_menu.html" import export_menu with context %}
+{% from "_attendance_roster.html" import roster_form with context %}
 {% block title %}{{ 'Student Registration & Attendance'|translate(language) }} · {{ school_name }}{% endblock %}
 {% block content %}
   <section class="page-title-row">
@@ -6,6 +8,7 @@
       <h1>{{ 'Student Registration & Attendance'|translate(language) }}</h1>
       <p class="muted">{{ 'Register a student with a class assignment or open the daily attendance register.'|translate(language) }}</p>
     </div>
+      {{ export_menu(url_for('views.export_students', academic_year=request.args.get('year') or None)) }}
   </section>
   <style>
     .portal-container{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;align-items:start}
@@ -23,10 +26,25 @@
     .grade-btn{display:inline-flex;align-items:center;min-height:36px;padding:7px 12px;border:1px solid #cbd5e1;border-radius:7px;background:#f1f5f9;color:var(--ink);font-size:.76rem;font-weight:700}
     .grade-btn:hover,.grade-btn.active{border-color:var(--primary);background:var(--primary);color:#fff}
     .selected-grade-title{margin:14px 0 0;color:var(--primary);font-size:.82rem;font-weight:700}
-    .student-box-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:9px;max-height:260px;margin-top:10px;padding:2px;overflow-y:auto}
-    .student-item{display:grid;gap:3px;padding:11px;border:1px solid #dce2ea;border-radius:8px;background:#f8fafc;color:var(--ink);text-align:left}
-    .student-item:hover,.student-item[aria-pressed="true"]{border-color:var(--primary);background:#f0f5ff}
-    .student-item small{overflow-wrap:anywhere;color:var(--muted);font-size:.68rem}
+    .roster-tools{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin:6px 0 10px}
+    .roster-tools input[type=search]{flex:1 1 240px;max-width:420px;min-height:40px;padding:8px 12px;border:1px solid #dce2ea;border-radius:10px;background:#fff;font:inherit}
+    .student-table-wrap{max-height:460px;overflow:auto;border:1px solid #e4e7ec;border-radius:12px;background:#fff;margin-top:10px}
+    .student-table{width:100%;border-collapse:collapse;font-size:.86rem}
+    .student-table thead th{position:sticky;top:0;z-index:1;padding:10px 12px;background:#f8fafc;border-bottom:1px solid #e4e7ec;color:var(--muted);font-size:.7rem;letter-spacing:.05em;text-align:left;text-transform:uppercase}
+    .student-table tbody{counter-reset:row}
+    .student-table tbody tr{counter-increment:row;cursor:pointer;border-bottom:1px solid #f1f3f6}
+    .student-table tbody tr:last-child{border-bottom:0}
+    .student-table td{padding:12px 14px;vertical-align:middle}
+    .student-table td.name-cell{font-weight:650;font-size:.95rem}
+    .student-table td.num::before{content:counter(row);color:var(--muted);font-variant-numeric:tabular-nums}
+    .student-table td.num{width:44px}
+    .student-table tbody tr:hover{background:#f6f9ff}
+    .student-table tbody tr[aria-pressed="true"]{background:#eaf2ff;box-shadow:inset 3px 0 0 var(--primary)}
+    .student-table tbody tr:focus-visible{outline:2px solid var(--primary);outline-offset:-2px}
+    .student-table .who{display:flex;align-items:center;gap:10px;font-weight:700}
+    .student-table .dot{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:50%;background:#e8eefc;color:var(--primary);font-size:.78rem;font-weight:800}
+    .student-table .muted-cell{color:var(--muted);overflow-wrap:anywhere}
+    @media(max-width:640px){.student-table .col-email,.student-table .col-phone{display:none}}
     .student-profile{position:sticky;top:90px}
     .profile-header{display:grid;justify-items:center;padding-bottom:15px;margin-bottom:15px;border-bottom:1px solid var(--line);text-align:center}
     .profile-avatar{display:grid;width:82px;height:82px;place-items:center;margin-bottom:9px;border-radius:50%;background:#e8effb;color:var(--primary);font-size:1.6rem;font-weight:800;object-fit:cover}
@@ -57,7 +75,15 @@
     .mark-all{padding:0;border:0;background:none;color:var(--primary);font:inherit;font-weight:700}
     .attendance-save{width:100%;margin-top:3px}
     @media(max-width:900px){.portal-container{grid-template-columns:minmax(0,1fr) 300px}}
-    @media(max-width:720px){.portal-container{grid-template-columns:1fr}.student-profile{position:static;grid-row:1}}
+    .sheet-close{display:none}
+    .sheet-backdrop{display:none}
+    @media(max-width:720px){
+      .portal-container{grid-template-columns:1fr}
+      .student-profile{position:fixed;top:auto;right:0;bottom:0;left:0;z-index:40;max-height:80vh;overflow:auto;padding-top:14px;border-radius:18px 18px 0 0;box-shadow:0 -14px 40px rgba(16,24,40,.28);transform:translateY(110%);visibility:hidden;transition:transform .22s ease,visibility 0s .22s}
+      .student-profile.sheet-open{transform:none;visibility:visible;transition:transform .22s ease}
+      .sheet-close{display:inline-flex;position:sticky;top:0;margin:0 0 6px auto;min-height:36px;padding:6px 14px;border:1px solid #cbd5e1;border-radius:999px;background:#fff;font-weight:700}
+      .sheet-backdrop.sheet-open{display:block;position:fixed;inset:0;z-index:39;background:rgba(16,24,40,.45)}
+    }
     @media(max-width:520px){.workflow-form{grid-template-columns:1fr}.workflow-form .wide{grid-column:auto}.roster-filter{grid-template-columns:1fr 1fr}.roster-filter label{grid-column:1/-1}.roster-filter button{width:100%}.portal-section,.student-profile{padding:16px}}
   </style>
 
@@ -78,12 +104,10 @@
               <input name="email" type="email" maxlength="254" value="{{ values.email }}" required autocomplete="email">
             </label>
             <label>{{ 'Class / grade'|translate(language) }}
-              <select name="course_id" required>
-                <option value="">{{ 'Choose a class'|translate(language) }}</option>
-                {% for course in courses %}
-                  <option value="{{ course.id }}" {% if values.course_id == course.id|string %}selected{% endif %}>{{ course.name }}</option>
-                {% endfor %}
-              </select>
+              <input name="class_name" list="class-options" maxlength="120" required autocomplete="off"
+                placeholder="4. Sınıf" value="{{ values.class_name }}">
+              <datalist id="class-options">{% for course in courses %}<option value="{{ course.name }}">{% endfor %}</datalist>
+              <small class="muted">{{ 'Type a class or pick one — a new class is created automatically.'|translate(language) }}</small>
             </label>
             <label>{{ "Father's phone"|translate(language) }}
               <input name="father_phone" type="tel" maxlength="40" value="{{ values.father_phone }}" autocomplete="tel">
@@ -112,41 +136,46 @@
       <section class="portal-section" aria-labelledby="class-roster-title">
         <h2 id="class-roster-title">{{ 'Current student list'|translate(language) }}</h2>
         <p class="section-description">{{ academic_year_label }} · {{ registered_students|length }} {{ 'students'|translate(language) }}</p>
-        <nav class="grade-buttons" aria-label="{{ 'Class / grade'|translate(language) }}">
-          <a class="grade-btn{% if not registered_course_id %} active{% endif %}"
+        <div class="roster-tools">
+          <input type="search" id="student-search" autocomplete="off" aria-label="{{ 'Search students'|translate(language) }}"
+            placeholder="{{ 'Search by name, email or class'|translate(language) }}" value="{{ request.args.get('q', '') }}">
+          <span class="muted" id="student-count"></span>
+        </div>
+        <nav class="grade-buttons" id="grade-buttons" aria-label="{{ 'Class / grade'|translate(language) }}">
+          <a class="grade-btn{% if not registered_course_id %} active{% endif %}" data-class-key=""
             href="{{ url_for('views.student_registration', tab='student') }}"
             {% if not registered_course_id %}aria-current="true"{% endif %}>{{ 'All classes'|translate(language) }}</a>
-          {% for course in courses %}
-            <a class="grade-btn{% if registered_course_id == course.id %} active{% endif %}"
+          {% for course in class_buttons %}
+            <a class="grade-btn{% if registered_course_id == course.id %} active{% endif %}" data-class-key="{{ course.key }}"
               href="{{ url_for('views.student_registration', tab='student', registered_course_id=course.id) }}"
               {% if registered_course_id == course.id %}aria-current="true"{% endif %}>{{ course.name }}</a>
           {% endfor %}
         </nav>
-        {% if registered_course_id %}
-          <p class="selected-grade-title">{{ registered_course.name }}</p>
-        {% endif %}
-        {% if registered_students %}
-          <div class="student-box-list" aria-label="{{ 'Current student list'|translate(language) }}">
-            {% for student in registered_students %}
-              <button type="button" class="student-item" aria-pressed="{{ 'true' if loop.first else 'false' }}"
-                data-name="{{ student.name }}" data-email="{{ student.email }}"
-                data-class="{{ student.class_names }}"
-                data-father-name="{{ student.father_name or '' }}"
-                data-father-phone="{{ student.father_phone or '' }}"
-                data-father-occupation="{{ student.father_occupation or '' }}"
-                data-mother-name="{{ student.mother_name or '' }}"
-                data-mother-phone="{{ student.mother_phone or '' }}"
-                data-mother-occupation="{{ student.mother_occupation or '' }}"
-                data-address="{{ student.home_address or '' }}"
-                data-picture="{% if student.profile_picture %}{{ url_for('views.profile_image', filename=student.profile_picture) }}{% endif %}">
-                <strong>{{ student.name }}</strong>
-                <small>{{ student.class_names }} · {{ student.email }}</small>
-              </button>
-            {% endfor %}
-          </div>
-        {% else %}
-          <div class="card-empty"><p>{{ 'No students yet'|translate(language) }}</p></div>
-        {% endif %}
+        <p class="selected-grade-title" id="selected-grade-title" {% if not registered_course_id %}hidden{% endif %}>{{ registered_course.name if registered_course else '' }}</p>
+        <div class="student-table-wrap" data-scroll-keep="student-table" {% if not registered_students %}hidden{% endif %}>
+          <table class="student-table" id="student-table" aria-label="{{ 'Current student list'|translate(language) }}">
+            <thead><tr><th>{{ 'Student'|translate(language) }}</th></tr></thead>
+            <tbody>
+              {% for student in registered_students %}
+                <tr class="student-item" tabindex="0" aria-pressed="false" {% if not student.matches %}hidden{% endif %}
+                  data-class-keys="{{ student.class_keys }}" data-search="{{ student.search_text }}"
+                  data-name="{{ student.name }}" data-email="{{ student.email }}"
+                  data-class="{{ student.class_names }}"
+                  data-father-name="{{ student.father_name or '' }}"
+                  data-father-phone="{{ student.father_phone or '' }}"
+                  data-father-occupation="{{ student.father_occupation or '' }}"
+                  data-mother-name="{{ student.mother_name or '' }}"
+                  data-mother-phone="{{ student.mother_phone or '' }}"
+                  data-mother-occupation="{{ student.mother_occupation or '' }}"
+                  data-address="{{ student.home_address or '' }}"
+                  data-picture="{% if student.profile_picture %}{{ url_for('views.profile_image', filename=student.profile_picture) }}{% endif %}">
+                  <td class="name-cell">{{ student.name }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="card-empty" id="student-empty" {% if registered_students|selectattr('matches')|list %}hidden{% endif %}><p>{{ 'No students yet'|translate(language) }}</p></div>
       </section>
 
       {% if attendance_enabled %}
@@ -172,37 +201,10 @@
           <div class="roster-title">
             <h3>{{ selected_course.name }}</h3>
             <p class="section-description">{{ attendance_date }} · {{ attendance_students|length }} {{ 'students'|translate(language) }}</p>
+            {{ export_menu(url_for('views.export_attendance', course_id=selected_course.id, attendance_date=attendance_date), 'Export attendance') }}
           </div>
           {% if attendance_students %}
-            <form method="post" action="{{ url_for('views.student_registration') }}" class="attendance-form">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <input type="hidden" name="action" value="attendance">
-              <input type="hidden" name="active_tab" value="attendance">
-              <input type="hidden" name="course_id" value="{{ selected_course.id }}">
-              <input type="hidden" name="attendance_date" value="{{ attendance_date }}">
-              <div class="attendance-table-scroll">
-                <table class="attendance-table">
-                  <thead><tr>
-                    <th>{{ 'Student'|translate(language) }}</th>
-                    {% for status in ['Present','Absent','Late','Excused'] %}
-                      <th><button type="button" class="mark-all" data-mark-all="{{ status }}">{{ status|translate(language) }}</button></th>
-                    {% endfor %}
-                  </tr></thead>
-                  <tbody>{% for student in attendance_students %}<tr>
-                    <td><strong>{{ student.name }}</strong></td>
-                    {% for status, badge_class in [('Present','status-present'),('Absent','status-absent'),('Late','status-late'),('Excused','status-excused')] %}
-                      <td><label class="attendance-choice">
-                        <input type="radio" name="status_{{ student.enrollment_id }}" value="{{ status }}"
-                          aria-label="{{ student.name }}: {{ status|translate(language) }}"
-                          {% if student.status == status %}checked{% endif %}>
-                        <span class="attendance-status {{ badge_class }}">{{ status|translate(language) }}</span>
-                      </label></td>
-                    {% endfor %}
-                  </tr>{% endfor %}</tbody>
-                </table>
-              </div>
-              <button class="attendance-save" type="submit">{{ 'Save attendance'|translate(language) }}</button>
-            </form>
+            {{ roster_form(attendance_students, url_for('views.student_registration'), {'action': 'attendance', 'active_tab': 'attendance', 'course_id': selected_course.id, 'attendance_date': attendance_date}) }}
           {% else %}
             <div class="card-empty"><p>{{ 'No students are enrolled in this class.'|translate(language) }}</p></div>
           {% endif %}
@@ -211,7 +213,9 @@
       {% endif %}
     </div>
 
-    <aside class="student-profile" aria-labelledby="profile-name">
+    <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+    <aside class="student-profile" id="student-profile" aria-labelledby="profile-name">
+      <button type="button" class="sheet-close" id="sheet-close">{{ 'Close'|translate(language) }} ✕</button>
       <div class="profile-header">
         <img class="profile-avatar" id="profile-avatar" alt="" hidden>
         <div class="profile-avatar" id="profile-placeholder" aria-hidden="true">?</div>
@@ -265,18 +269,92 @@
           placeholder.hidden = false;
         }
       };
+      // Phones: the profile opens as a bottom sheet right where you are, so the page never jumps.
+      const profilePanel = document.getElementById('student-profile');
+      const backdrop = document.getElementById('sheet-backdrop');
+      const phone = window.matchMedia('(max-width: 720px)');
+      let lastRow = null;
+      const openSheet = () => {
+        if (!phone.matches) return;
+        profilePanel.classList.add('sheet-open');
+        backdrop.hidden = false; backdrop.classList.add('sheet-open');
+        document.getElementById('sheet-close').focus({preventScroll: true});
+      };
+      const closeSheet = () => {
+        profilePanel.classList.remove('sheet-open');
+        backdrop.classList.remove('sheet-open'); backdrop.hidden = true;
+        if (lastRow) lastRow.focus({preventScroll: true});
+      };
+      document.getElementById('sheet-close').addEventListener('click', closeSheet);
+      backdrop.addEventListener('click', closeSheet);
+      document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeSheet(); });
+      const stateKey = 'studentlist:' + location.pathname;
+      const saveState = () => {
+        try {
+          const row = [...studentCards].find((r) => r.getAttribute('aria-pressed') === 'true');
+          sessionStorage.setItem(stateKey, JSON.stringify({
+            q: document.getElementById('student-search') ? document.getElementById('student-search').value : '',
+            sel: row ? row.dataset.email : ''
+          }));
+        } catch (e) { /* storage unavailable */ }
+      };
+      const choose = (card) => { lastRow = card; showStudentProfile(card); saveState(); openSheet(); };
       studentCards.forEach((card) => {
-        card.addEventListener('click', () => showStudentProfile(card));
-      });
-      if (studentCards.length) showStudentProfile(studentCards[0]);
-
-      document.querySelectorAll('[data-mark-all]').forEach((button) => {
-        button.addEventListener('click', () => {
-          const status = button.dataset.markAll;
-          document.querySelectorAll(`input[type="radio"][value="${status}"]`)
-            .forEach((radio) => { radio.checked = true; });
+        card.addEventListener('click', () => choose(card));
+        card.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); choose(card); }
         });
       });
+
+      // Live class filter + search. Keys are pre-computed on the server (same folding rules),
+      // so case, spacing and Turkish letters can never cause a mismatch.
+      const fold = (text) => (text || '').toLocaleLowerCase('tr').replace(/\s+/g, ' ').trim()
+        .replace(/ç/g, 'c').replace(/ğ/g, 'g').replace(/ı/g, 'i').replace(/ö/g, 'o').replace(/ş/g, 's').replace(/ü/g, 'u');
+      const searchBox = document.getElementById('student-search');
+      const gradeLinks = [...document.querySelectorAll('#grade-buttons .grade-btn')];
+      const countLabel = document.getElementById('student-count');
+      const emptyBox = document.getElementById('student-empty');
+      const tableWrap = document.querySelector('.student-table-wrap');
+      const titleEl = document.getElementById('selected-grade-title');
+      const studentsWord = {{ 'students'|translate(language)|tojson }};
+      let activeClass = (gradeLinks.find((a) => a.classList.contains('active')) || {dataset: {classKey: ''}}).dataset.classKey;
+      const applyFilter = () => {
+        const query = fold(searchBox ? searchBox.value : '');
+        let visible = 0;
+        studentCards.forEach((row) => {
+          const inClass = !activeClass || row.dataset.classKeys.split('|').includes(activeClass);
+          const inSearch = !query || row.dataset.search.includes(query);
+          row.hidden = !(inClass && inSearch);
+          if (!row.hidden) visible += 1;
+        });
+        if (countLabel) countLabel.textContent = visible + ' ' + studentsWord;
+        if (emptyBox) emptyBox.hidden = visible > 0;
+        if (tableWrap) tableWrap.hidden = visible === 0;
+        const selected = [...studentCards].find((row) => row.getAttribute('aria-pressed') === 'true' && !row.hidden);
+        const firstVisible = [...studentCards].find((row) => !row.hidden);
+        if (!selected && firstVisible) showStudentProfile(firstVisible);
+      };
+      gradeLinks.forEach((link) => link.addEventListener('click', (event) => {
+        event.preventDefault();
+        activeClass = link.dataset.classKey;
+        gradeLinks.forEach((a) => { a.classList.toggle('active', a === link); a.toggleAttribute('aria-current', a === link); });
+        if (titleEl) { titleEl.textContent = activeClass ? link.textContent.trim() : ''; titleEl.hidden = !activeClass; }
+        history.replaceState(null, '', link.href);
+        applyFilter();
+      }));
+      if (searchBox) searchBox.addEventListener('input', () => { applyFilter(); saveState(); });
+      // Coming back (back button, or after saving something): bring back the search text and the chosen student.
+      if (window.PortalReturn && window.PortalReturn.isReturn) {
+        try {
+          const saved = JSON.parse(sessionStorage.getItem(stateKey) || 'null');
+          if (saved && searchBox && saved.q && !searchBox.value) searchBox.value = saved.q;
+          applyFilter();
+          const row = saved && [...studentCards].find((r) => r.dataset.email === saved.sel && !r.hidden);
+          if (row) showStudentProfile(row);
+        } catch (e) { applyFilter(); }
+      } else {
+        applyFilter();
+      }
     })();
   </script>
 {% endblock %}

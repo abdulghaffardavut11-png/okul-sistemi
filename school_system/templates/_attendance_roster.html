@@ -1,0 +1,80 @@
+{#- Shared roll-call form used by /attendance and the Student Registration tab.
+    Everyone defaults to "Present" (Geldi); the teacher only changes exceptions. -#}
+{% macro roster_form(students, action_url, hidden) %}
+  <style>
+    .roll-summary{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+    .roll-count{display:inline-flex;gap:6px;align-items:baseline;padding:6px 12px;border-radius:999px;font-size:.8rem;font-weight:750;border:1px solid currentColor}
+    .roll-count b{font-size:1rem}
+    .roll-bulk{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 12px}
+    .roll-bulk span{font-size:.8rem;color:var(--muted,#667085)}
+    .roll-bulk button{padding:6px 12px;font-size:.78rem}
+    .roll-list{display:grid;gap:10px;margin:0 0 16px;padding:0;list-style:none}
+    .roll-row{display:grid;grid-template-columns:minmax(150px,1fr) auto;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--line,#e4e7ec);border-radius:12px;background:#fff}
+    .roll-name{font-weight:750}
+    .roll-name small{display:block;font-weight:500;color:var(--muted,#667085)}
+    .roll-choices{display:grid;grid-template-columns:repeat(4,minmax(78px,1fr));gap:6px}
+    .roll-choice{position:relative;cursor:pointer}
+    .roll-choice input{position:absolute;opacity:0;width:1px;height:1px}
+    .roll-choice span{display:flex;justify-content:center;align-items:center;min-height:40px;padding:6px 8px;border:1px solid currentColor;border-radius:10px;font-size:.78rem;font-weight:750;text-align:center;opacity:.5}
+    .roll-choice input:checked+span{opacity:1;color:#fff}
+    .roll-choice input:focus-visible+span{outline:2px solid var(--ink,#101828);outline-offset:2px}
+    .roll-present{color:#16803c}.roll-choice input:checked+.roll-present,.roll-count.roll-present b{background:none}
+    .roll-choice input:checked+.roll-present{background:#16803c}
+    .roll-absent{color:#b42318}.roll-choice input:checked+.roll-absent{background:#b42318}
+    .roll-late{color:#946200}.roll-choice input:checked+.roll-late{background:#946200}
+    .roll-excused{color:#1758a6}.roll-choice input:checked+.roll-excused{background:#1758a6}
+    .roll-save{width:100%;min-height:46px;font-size:1rem}
+    @media (max-width:560px){
+      .roll-row{grid-template-columns:1fr}
+      .roll-choices{grid-template-columns:repeat(2,1fr)}
+    }
+  </style>
+  {% set statuses = [('Present','roll-present'),('Absent','roll-absent'),('Late','roll-late'),('Excused','roll-excused')] %}
+  <form method="post" action="{{ action_url }}" class="attendance-form" data-roll-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% for name, value in hidden.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+    <div class="roll-summary" aria-live="polite">
+      {% for status, css in statuses %}
+        <span class="roll-count {{ css }}">{{ status|translate(language) }} <b data-roll-count="{{ status }}">0</b></span>
+      {% endfor %}
+    </div>
+    <div class="roll-bulk">
+      <span>{{ 'Mark everyone as'|translate(language) }}:</span>
+      {% for status, css in statuses %}
+        <button type="button" class="secondary-button {{ css }}" data-mark-all="{{ status }}">{{ status|translate(language) }}</button>
+      {% endfor %}
+    </div>
+    <ul class="roll-list">
+      {% for student in students %}
+        <li class="roll-row">
+          <div class="roll-name">{{ student.name }}{% if student.grade_level %}<small>{{ student.grade_level }}</small>{% endif %}</div>
+          <div class="roll-choices" role="radiogroup" aria-label="{{ student.name }}">
+            {% for status, css in statuses %}
+              <label class="roll-choice">
+                <input type="radio" name="status_{{ student.enrollment_id }}" value="{{ status }}"
+                  aria-label="{{ student.name }}: {{ status|translate(language) }}"
+                  {% if (student.status or 'Present') == status %}checked{% endif %}>
+                <span class="{{ css }}">{{ status|translate(language) }}</span>
+              </label>
+            {% endfor %}
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+    <button class="roll-save" type="submit">{{ 'Save attendance'|translate(language) }}</button>
+  </form>
+  <script>
+    (function () {
+      const form = document.currentScript.previousElementSibling;
+      const refresh = () => form.querySelectorAll('[data-roll-count]').forEach((el) => {
+        el.textContent = form.querySelectorAll(`input[type="radio"][value="${el.dataset.rollCount}"]:checked`).length;
+      });
+      form.addEventListener('change', refresh);
+      form.querySelectorAll('[data-mark-all]').forEach((button) => button.addEventListener('click', () => {
+        form.querySelectorAll(`input[type="radio"][value="${button.dataset.markAll}"]`).forEach((r) => { r.checked = true; });
+        refresh();
+      }));
+      refresh();
+    })();
+  </script>
+{% endmacro %}

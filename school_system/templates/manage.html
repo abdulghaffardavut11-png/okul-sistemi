@@ -1,12 +1,11 @@
 {% extends "base.html" %}
+{% from "_export_menu.html" import export_menu with context %}
 {% block title %}{{ definition.title|translate(language) }} · {{ school_name }}{% endblock %}
 {% block content %}
   <div class="page-heading">
     <div><h1>{{ definition.title|translate(language) }}</h1><p class="muted">{{ 'Manage school records and review details.'|translate(language) }}</p></div>
     <div class="heading-actions">
-      {% if resource == 'students' and session.get('role') in ('super_admin','manager','admin') %}
-        <a class="button-small secondary-button" href="{{ url_for('views.export_students', academic_year=request.args.get('year', academic_year)) }}">{{ 'Export CSV'|translate(language) }}</a>
-      {% endif %}
+      {{ export_menu(url_for('views.export_resource', resource=resource)) }}
       <span class="badge">{{ records|length }} records</span>
     </div>
   </div>

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% from "_export_menu.html" import export_menu with context %}
+{% block title %}{{ 'Archive / Storage'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <section class="page-title-row"><div><span class="eyebrow">{{ 'Super Admin'|translate(language) }}</span><h1>{{ 'Archive / Storage'|translate(language) }}</h1>
+    <p class="muted">{{ 'Bulletins whose publishing time is over are moved here automatically. Only the Super Admin can see them.'|translate(language) }}</p></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">{{ export_menu(url_for('views.export_bulletins', archived=1)) }}
+    <a class="button-small secondary-button" href="{{ url_for('views.portal', module='bulletin') }}">{{ 'Weekly Bulletin'|translate(language) }}</a></div></section>
+  <section class="portal-card">
+    {% if records %}<div class="event-list">
+      {% for r in records %}
+        <article class="event-item"><span class="event-date">{{ r.archived_at[:10] }}</span>
+          <div class="request-content"><h2>{{ r.title }}</h2><p>{{ r.body }}</p>
+            <p class="muted"><small>{{ r.period|capitalize|translate(language) }} · {{ 'Published'|translate(language) }}: {{ r.published_at[:16] }} · {{ 'Ended'|translate(language) }}: {{ r.expires_at[:16] if r.expires_at else '—' }} · {{ ('Moved manually' if r.archive_reason == 'manual' else 'Expired automatically')|translate(language) }}</small></p></div>
+          <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="record_id" value="{{ r.id }}">
+            <button class="button-small secondary-button" name="action" value="restore" type="submit">{{ 'Restore'|translate(language) }}</button>
+            <button class="button-small danger-button" name="action" value="delete" type="submit" onclick="return confirm('{{ 'Delete permanently?'|translate(language)|e }}')">{{ 'Delete'|translate(language) }}</button></form>
+        </article>
+      {% endfor %}
+    </div>{% else %}<div class="card-empty"><span>◌</span><p>{{ 'The archive is empty.'|translate(language) }}</p></div>{% endif %}
+  </section>
+{% endblock %}

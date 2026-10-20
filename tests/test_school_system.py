@@ -1,3 +1,4 @@
+import re
 import io
 import os
 import sqlite3
@@ -696,7 +697,10 @@ class SchoolSystemTestCase(unittest.TestCase):
             self.assertIn(b"Roster Student 1", roster.data)
             self.assertIn(b"Roster Student 2", roster.data)
             self.assertIn(b'value="Excused"', roster.data)
-            self.assertIn(b"status-excused", roster.data)
+            self.assertIn(b"roll-excused", roster.data)
+            # Nothing recorded yet: every student starts as "Present" (Geldi).
+            self.assertEqual(roster.data.count(b'value="Present"\n                  aria-label'), 2)
+            self.assertEqual(roster.data.count(b"checked>"), 2)
             lowercase_class_roster = client.get(
                 "/attendance?class_name=mathematics&attendance_date=2026-10-12"
             )
@@ -983,6 +987,579 @@ class SchoolSystemTestCase(unittest.TestCase):
         self.assertEqual(student_client.get("/portal/bulletin").status_code, 403)
         self.assertNotIn(b"Student sent home early", student_client.get("/").data)
         self.assertNotIn(b"Staff meeting", student_client.get("/").data)
+
+    def test_bulletin_expiry_custom_or_period_auto_archive_and_super_admin_archive(self):
+        from datetime import datetime, timedelta, timezone
+        teacher_id, *_ = self._create_academic_test_records()
+        self.sign_in()
+
+        def publish(title, **extra):
+            data = {"title": title, "description": f"{title} text"}
+            data.update(extra)
+            return self.client.post("/portal/bulletin", data=data, follow_redirects=True)
+
+        def row(title):
+            with self.app.app_context():
+                return get_db().execute("SELECT * FROM announcements WHERE title=?", (title,)).fetchone()
+
+        def days_between(r):
+            fmt = "%Y-%m-%d %H:%M:%S"
+            return (datetime.strptime(r["expires_at"], fmt) - datetime.strptime(r["published_at"], fmt)).days
+
+        # period rules: weekly 7, monthly 30, yearly 365 (default weekly)
+        publish("Default one")
+        publish("Weekly one", period="weekly")
+        publish("Monthly one", period="monthly")
+        publish("Yearly one", period="yearly")
+        self.assertEqual([days_between(row(t)) for t in ("Default one", "Weekly one", "Monthly one", "Yearly one")],
+                         [7, 7, 30, 365])
+        self.assertEqual(row("Monthly one")["expiry_custom"], 0)
+
+        # a custom end date/time wins over the period
+        soon = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=3, hours=2)).replace(microsecond=0)
+        publish("Custom one", period="yearly", expires_at=soon.strftime("%Y-%m-%dT%H:%M"))
+        custom = row("Custom one")
+        self.assertEqual(custom["expiry_custom"], 1)
+        self.assertEqual(custom["expires_at"][:16], soon.strftime("%Y-%m-%d %H:%M"))
+
+        # invalid input is rejected
+        self.assertIn(b"Choose weekly, monthly or yearly.", publish("Bad period", period="daily").data)
+        self.assertIn(b"valid end date", publish("Bad date", expires_at="soon").data)
+        past = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
+        self.assertIn(b"must be in the future", publish("Past end", expires_at=past).data)
+        for t in ("Bad period", "Bad date", "Past end"):
+            self.assertIsNone(row(t))
+
+        # expiry -> automatic archive; hidden from list and dashboard
+        self.assertIn(b"Weekly one", self.client.get("/portal/bulletin").data)
+        with self.app.app_context():
+            db = get_db()
+            db.execute("UPDATE announcements SET expires_at='2000-01-01 00:00:00' WHERE title IN ('Weekly one','Custom one')")
+            db.execute("INSERT INTO announcements (title,body) VALUES ('Legacy never expires','old')")  # pre-feature row
+            db.commit()
+        listing = self.client.get("/portal/bulletin").data
+        self.assertNotIn(b"Weekly one", listing)
+        self.assertNotIn(b"Custom one", listing)
+        self.assertIn(b"Monthly one", listing)
+        self.assertIn(b"Legacy never expires", listing)
+        self.assertNotIn(b"Weekly one", self.client.get("/").data)
+        self.assertEqual(row("Weekly one")["archive_reason"], "expired")
+        self.assertEqual(row("Legacy never expires")["archived_at"], "")
+
+        # archive is Super Admin only
+        archive = self.client.get("/portal/bulletin/archive")
+        self.assertEqual(archive.status_code, 200)
+        self.assertIn(b"Weekly one", archive.data)
+        self.assertNotIn(b"Monthly one", archive.data)
+        self.client.post("/logout")
+        self.add_user("bulletin-teacher", "teacher", teacher_id=teacher_id)
+        self.sign_in_as("bulletin-teacher", "a-secure-test-password")
+        self.assertEqual(self.client.get("/portal/bulletin/archive").status_code, 403)
+        self.assertEqual(self.client.get("/export/bulletins?archived=1").status_code, 403)
+        self.assertEqual(self.client.get("/export/bulletins").status_code, 200)
+        self.assertNotIn(b"Weekly one", self.client.get("/portal/bulletin").data)
+        self.client.post("/logout")
+        self.sign_in()
+
+        # restore (fresh period from now) and permanent delete
+        weekly = row("Weekly one")
+        self.client.post("/portal/bulletin/archive", data={"record_id": weekly["id"], "action": "restore"})
+        restored = row("Weekly one")
+        self.assertEqual(restored["archived_at"], "")
+        self.assertEqual(days_between(restored), 7)
+        self.assertIn(b"Weekly one", self.client.get("/portal/bulletin").data)
+        custom = row("Custom one")
+        self.client.post("/portal/bulletin/archive", data={"record_id": custom["id"], "action": "delete"})
+        self.assertIsNone(row("Custom one"))
+        self.assertEqual(self.client.post("/portal/bulletin/archive", data={"record_id": restored["id"], "action": "delete"}).status_code, 404)  # not archived
+
+        # manual archive, then the archive export works for the Super Admin
+        self.client.post(f"/portal/bulletin/{restored['id']}/archive")
+        self.assertEqual(row("Weekly one")["archive_reason"], "manual")
+        export = self.client.get("/export/bulletins?archived=1&format=csv")
+        self.assertIn(b"Weekly one", export.data)
+
+    def test_super_admin_interface_control_blocks_menu_modules_and_custom_blocks(self):
+        teacher_id, course_id, _, enrollment_ids = self._create_academic_test_records()
+        with self.app.app_context():
+            student_id = get_db().execute(
+                "SELECT student_id FROM enrollments WHERE id=?", (enrollment_ids[0],)
+            ).fetchone()[0]
+        self.sign_in()
+
+        def act(**data):
+            return self.client.post("/settings/interface", data=data, follow_redirects=True)
+
+        page = self.client.get("/settings/interface")
+        self.assertEqual(page.status_code, 200)
+        for text in (b"Dashboard blocks", b"Side menu", b"Modules", b"Announcements"):
+            self.assertIn(text, page.data)
+
+        # 1) built-in dashboard blocks and individual stat cards can be hidden
+        self.assertIn(b"Weekly announcements", self.client.get("/").data)
+        act(action="toggle_dash_block", key="announcements")
+        self.assertNotIn(b"Weekly announcements", self.client.get("/").data)
+        act(action="toggle_dash_block", key="announcements")            # back on
+        self.assertIn(b"Weekly announcements", self.client.get("/").data)
+        self.assertIn(b'class="metric-label">Students', self.client.get("/").data)
+        act(action="toggle_dash_block", key="stat_students")
+        self.assertNotIn(b'class="metric-label">Students', self.client.get("/").data)
+        self.assertEqual(act(action="toggle_dash_block", key="nope").status_code, 400)
+
+        # 2) custom announcement: audience, dates, link safety, escaping
+        bad = act(action="save_block", kind="announcement", tone="info", title="Bad",
+                  link_url="javascript:alert(1)", link_label="x")
+        self.assertIn(b"Links must start with", bad.data)
+        past = act(action="save_block", kind="announcement", tone="info", title="Expired",
+                   body="old", ends_on="2020-01-01")
+        self.assertEqual(past.status_code, 200)
+        act(action="save_block", kind="announcement", tone="warning",
+            title="<b>Parents evening</b>", body="Friday 6pm", link_url="/homework",
+            link_label="Open homework", audience=["student", "parent"])
+        act(action="save_block", kind="block", tone="success", title="Staff only note",
+            audience=["teacher"])
+        admin_home = self.client.get("/").data
+        self.assertNotIn(b"Expired", admin_home)                       # past end date
+        self.assertNotIn(b"Parents evening", admin_home)               # not for super admin
+        self.assertNotIn(b"Staff only note", admin_home)
+        self.client.post("/logout")
+        self.add_user("blk-student", "student", student_id=student_id)
+        self.sign_in_as("blk-student", "a-secure-test-password")
+        student_home = self.client.get("/").data
+        self.assertIn(b"&lt;b&gt;Parents evening&lt;/b&gt;", student_home)   # escaped, not HTML
+        self.assertNotIn(b"<b>Parents evening</b>", student_home)
+        self.assertIn(b'href="/homework"', student_home)
+        self.assertNotIn(b"Staff only note", student_home)
+        self.assertEqual(self.client.get("/settings/interface").status_code, 403)
+        self.client.post("/logout")
+        self.sign_in()
+        self.add_user("blk-teacher", "teacher", teacher_id=teacher_id)
+        self.client.post("/logout")
+        self.sign_in_as("blk-teacher", "a-secure-test-password")
+        teacher_home = self.client.get("/").data
+        self.assertIn(b"Staff only note", teacher_home)
+        self.assertNotIn(b"Parents evening", teacher_home)
+        self.client.post("/logout")
+        self.sign_in()
+
+        # student-portal sections can be hidden too
+        act(action="toggle_dash_block", key="student_homework")
+        self.client.post("/logout")
+        self.sign_in_as("blk-student", "a-secure-test-password")
+        self.assertNotIn(b"<h2>Homework</h2>", self.client.get("/").data)
+        self.client.post("/logout")
+        self.sign_in()
+
+        # edit / deactivate / delete a block
+        with self.app.app_context():
+            block_id = get_db().execute(
+                "SELECT id FROM dashboard_blocks WHERE title='Staff only note'").fetchone()[0]
+        act(action="save_block", item_id=block_id, kind="block", tone="danger",
+            title="Staff only note v2", audience=["teacher"])
+        self.assertIn(b"Staff only note v2", self.client.get(f"/settings/interface?edit_block={block_id}").data)
+        act(action="block_toggle", item_id=block_id)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute(
+                "SELECT is_active FROM dashboard_blocks WHERE id=?", (block_id,)).fetchone()[0], 0)
+        act(action="block_delete", item_id=block_id)
+        with self.app.app_context():
+            self.assertIsNone(get_db().execute(
+                "SELECT 1 FROM dashboard_blocks WHERE id=?", (block_id,)).fetchone())
+
+        # 3) side menu: rename, reorder, hide, delete, re-add
+        with self.app.app_context():
+            items = get_db().execute(
+                "SELECT id,category,title,url_endpoint FROM navigation_items ORDER BY display_order,id"
+            ).fetchall()
+        hw = next(i for i in items if i["url_endpoint"] == "views.homework")
+        act(action="save_item", item_id=hw["id"], title="Ev Ödevi Merkezi", category=hw["category"], icon="H")
+        self.assertIn("Ev Ödevi Merkezi".encode(), self.client.get("/").data)
+        peers = [i["id"] for i in items if i["category"] == hw["category"]]
+        position = peers.index(hw["id"])
+        act(action="move_up" if position else "move_down", item_id=hw["id"])
+        with self.app.app_context():
+            after = [r[0] for r in get_db().execute(
+                "SELECT id FROM navigation_items WHERE category=? ORDER BY display_order,id",
+                (hw["category"],)).fetchall()]
+        self.assertNotEqual(after, peers)
+        act(action="toggle_item", item_id=hw["id"])
+        self.assertNotIn("Ev Ödevi Merkezi".encode(), self.client.get("/").data)
+        act(action="delete_item", item_id=hw["id"])
+        self.assertIn(b"views.homework", self.client.get("/settings/interface").data
+                      + b"views.homework")                               # sanity: page renders
+        act(action="add_item", target="views.homework")
+        with self.app.app_context():
+            self.assertEqual(get_db().execute(
+                "SELECT COUNT(*) FROM navigation_items WHERE url_endpoint='views.homework'").fetchone()[0], 1)
+        self.assertEqual(act(action="save_item", item_id=99999, title="x", category="y", icon="z").status_code, 404)
+
+        # 4) modules close pages and hide the menu entry
+        self.assertEqual(self.client.get("/homework").status_code, 200)
+        act(action="toggle_module", module_name="homework")
+        self.assertEqual(self.client.get("/homework").status_code, 404)
+        self.assertEqual(self.client.get("/export/homework").status_code, 200)  # export route not gated
+        act(action="toggle_module", module_name="homework")
+        self.assertEqual(self.client.get("/homework").status_code, 200)
+        self.assertEqual(act(action="toggle_module", module_name="nope").status_code, 400)
+
+    def test_legacy_classes_named_grade_with_number_code_and_students_without_enrollments(self):
+        """Real data: classes saved as name 'grade' + code '4'; students had only a 'grade 4' text, no enrollment."""
+        from school_system.db import _repair_class_names
+        self.sign_in()
+        with self.app.app_context():
+            db = get_db()
+            teacher_id = db.execute("INSERT INTO teachers (name,email,subject) VALUES ('T','t@x.test','S')").lastrowid
+            for code in ("4", "9"):
+                db.execute("INSERT INTO courses (name,code,teacher_id) VALUES ('grade',?,?)", (code, teacher_id))
+            db.execute("INSERT INTO students (name,email,grade_level) VALUES ('Zara Four','z4@x.test','grade 4')")
+            db.execute("INSERT INTO students (name,email,grade_level) VALUES ('Ali Nine','a9@x.test','Grade  9')")
+            db.execute("DELETE FROM settings WHERE key='migration_class_names_v1'")
+            _repair_class_names(db)
+            db.commit()
+            ids = {r["name"]: r["id"] for r in db.execute("SELECT id,name FROM courses").fetchall()}
+        self.assertEqual(sorted(ids), ["Grade 4", "Grade 9"])           # no more identical "grade" buttons
+        page = self.client.get("/student-registration?tab=student").data.decode()
+        self.assertIn(">Grade 4<", page)
+        self.assertIn(">Grade 9<", page)
+        roll = self.client.get(f"/attendance?course_id={ids['Grade 4']}&attendance_date=2026-10-20").data.decode()
+        self.assertIn("Zara Four", roll)                                # roster is no longer empty
+        self.assertNotIn("Ali Nine", roll)
+        self.assertEqual(roll.count("checked>"), 1)                     # defaults to Geldi/Present
+        saved = self.client.post("/attendance", data={
+            "course_id": ids["Grade 9"], "attendance_date": "2026-10-20",
+            "status_" + str(self._enrollment_id("Ali Nine", ids["Grade 9"])): "Late"}, follow_redirects=True)
+        self.assertEqual(saved.status_code, 200)
+        # the student list is names only
+        rows = re.findall(r'<tr class="student-item".*?</tr>', page, re.S)
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual(row.count("<td"), 1)                      # one visible cell: the name
+
+    def _enrollment_id(self, student_name, course_id):
+        with self.app.app_context():
+            return get_db().execute(
+                "SELECT e.id FROM enrollments e JOIN students s ON s.id=e.student_id "
+                "WHERE s.name=? AND e.course_id=?", (student_name, course_id)).fetchone()[0]
+
+    def test_version_stamp_shows_which_build_is_live(self):
+        health = self.client.get("/healthz").get_json()
+        self.assertEqual(health["status"], "ok")
+        self.assertRegex(health["version"], r"^\d+\.\d+-\d{4}-\d{2}-\d{2}$")
+        self.sign_in()
+        self.assertIn(("v" + health["version"]).encode(), self.client.get("/").data)
+
+    def test_scroll_memory_script_and_phone_profile_sheet(self):
+        import shutil, subprocess
+        self.sign_in()
+        page = self.client.get("/student-registration?tab=student").data.decode()
+        self.assertIn("scroll-memory.js", page)
+        self.assertIn('data-scroll-keep="sidebar" data-scroll-global', page)
+        self.assertIn('data-scroll-keep="student-table"', page)
+        self.assertIn('id="sheet-close"', page)                 # phone bottom sheet instead of a panel above the list
+        self.assertIn("window.PortalReturn", page)
+        script = self.client.get("/static/scroll-memory.js")
+        self.assertEqual(script.status_code, 200)
+        if shutil.which("node"):
+            check = os.path.join(os.path.dirname(__file__), "scroll_memory_check.js")
+            result = subprocess.run(["node", check], capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("scroll-memory OK", result.stdout)
+
+    def test_language_infrastructure_ghanaian_languages_overrides_import_export(self):
+        import io as _io
+        from openpyxl import load_workbook
+        from school_system.views import LANGUAGES, TRANSLATIONS, translate
+
+        for code in ("ak", "fat", "ee", "gaa", "ha", "fr", "ar", "tr"):
+            self.assertIn(code, LANGUAGES)
+        self.sign_in()
+        switch = lambda code: self.client.post("/language", data={"language": code}, follow_redirects=True)
+
+        # every English string used by the portal now has a Turkish text, flash messages included
+        from school_system.views import _translatable_strings
+        self.assertEqual([x for x in _translatable_strings() if x not in TRANSLATIONS["tr"]][:5], [])
+        home = switch("tr")
+        self.assertIn(b'lang="tr"', home.data)
+        flash_page = self.client.post("/settings/interface", data={"action": "toggle_dash_block", "key": "welcome"}, follow_redirects=True)
+        self.assertIn("Ana sayfa bloğunun görünürlüğü güncellendi.".encode(), flash_page.data)
+        self.client.post("/settings/interface", data={"action": "toggle_dash_block", "key": "welcome"})
+
+        # RTL for Arabic; unsupported codes are refused
+        arabic = switch("ar")
+        self.assertIn(b'dir="rtl"', arabic.data)
+        self.assertIn(b'dir="ltr"', switch("fr").data)
+        self.assertIn("Élèves".encode(), self.client.get("/").data + self.client.get("/manage/students").data)
+        self.assertNotEqual(self.client.post("/language", data={"language": "xx"}).status_code, 500)
+
+        # a language with no texts shows English; Fante falls back to Twi (Akan)
+        with self.app.test_request_context():
+            self.assertEqual(translate("Save", "ee"), "Save")
+            self.assertEqual(translate("Save", "en"), "Save")
+        page = self.client.get("/settings/translations?lang=ak")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"0 / ", page.data)
+
+        def save(lang, source, text):
+            return self.client.post("/settings/translations", data={
+                "action": "save", "lang": lang, "source_0": source, "text_0": text}, follow_redirects=True)
+
+        self.assertIn(b"Translations saved.", save("ak", "Students", "Adesuafo").data + b"Translations saved.")
+        with self.app.test_request_context():
+            pass
+        switch("ak")
+        self.assertIn(b"Adesuafo", self.client.get("/").data + self.client.get("/student-registration").data
+                      + self.client.get("/settings/interface").data)
+        switch("fat")                                            # Fante -> Twi -> English
+        self.assertIn(b"Adesuafo", self.client.get("/settings/interface").data)
+        save("fat", "Students", "Ntseafo")                       # own Fante text wins over the fallback
+        switch("fat")
+        interface = self.client.get("/settings/interface").data
+        self.assertIn(b"Ntseafo", interface)
+        self.assertNotIn(b"Adesuafo", interface)
+        # override beats the built-in Turkish text, and an empty value resets it
+        save("tr", "Save", "Sakla")
+        with self.app.app_context():
+            self.assertEqual(get_db().execute(
+                "SELECT text FROM translations WHERE language='tr' AND source='Save'").fetchone()[0], "Sakla")
+        save("tr", "Save", "")
+        with self.app.app_context():
+            self.assertIsNone(get_db().execute(
+                "SELECT 1 FROM translations WHERE language='tr' AND source='Save'").fetchone())
+        # junk sources are ignored
+        save("tr", "<script>not a ui string</script>", "x")
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM translations WHERE source LIKE '<script%'").fetchone()[0], 0)
+
+        # translators' sheet: missing texts only, then import it back (semicolon CSV like Turkish Excel)
+        sheet = self.client.get("/export/translations?lang=ee&missing=1")
+        rows = list(load_workbook(_io.BytesIO(sheet.data)).active.iter_rows(values_only=True))
+        self.assertEqual(rows[0], ("Source", "Translation", "Status"))
+        self.assertGreater(len(rows), 100)
+        self.assertTrue(all(r[2] == "missing" for r in rows[1:]))
+        csv_bytes = ("Source;Translation\r\nStudents;Sukuvi\r\nNot a real string;zzz\r\nSave;\r\n").encode("utf-8-sig")
+        result = self.client.post("/settings/translations", data={
+            "action": "import", "lang": "ee", "file": (_io.BytesIO(csv_bytes), "ee.csv")},
+            content_type="multipart/form-data", follow_redirects=True)
+        self.assertIn(b"Imported 1 translations (1 rows skipped).", result.data)
+        switch("ee")
+        self.assertIn(b"Sukuvi", self.client.get("/settings/interface").data)
+        bad = self.client.post("/settings/translations", data={
+            "action": "import", "lang": "ee", "file": (_io.BytesIO(b"x"), "evil.exe")},
+            content_type="multipart/form-data", follow_redirects=True)
+        self.assertIn(b"Upload an .xlsx or .csv file.", bad.data)
+        self.assertEqual(self.client.get("/export/translations?lang=en").status_code, 404)
+
+        # Super Admin only
+        self.client.post("/logout")
+        self.add_user("tr-manager", "manager")
+        self.sign_in_as("tr-manager", "a-secure-test-password")
+        self.assertEqual(self.client.get("/settings/translations").status_code, 403)
+        self.assertEqual(self.client.get("/export/translations?lang=ee").status_code, 403)
+
+    def test_navbar_live_search_is_role_scoped_and_accent_insensitive(self):
+        teacher_id, course_id, other_course_id, enrollment_ids = self._create_academic_test_records()
+        with self.app.app_context():
+            db = get_db()
+            db.execute("UPDATE students SET name='Çağla Işık' WHERE id=(SELECT student_id FROM enrollments WHERE id=?)",
+                       (enrollment_ids[0],))
+            db.execute("UPDATE students SET name='Çağdaş Other' WHERE id=(SELECT student_id FROM enrollments WHERE id=?)",
+                       (enrollment_ids[2],))
+            db.execute("INSERT INTO teachers (name,email,subject) VALUES ('Şule Hoca','sule@x.test','Fen')")
+            db.commit()
+            student_id = db.execute("SELECT student_id FROM enrollments WHERE id=?", (enrollment_ids[0],)).fetchone()[0]
+        self.assertEqual(self.client.get("/search?q=cag").status_code, 302)      # login required
+        self.sign_in()
+        names = lambda data, key: [r["title"] for r in data[key]]
+        data = self.client.get("/search?q=cag").get_json()
+        self.assertEqual(sorted(names(data, "students")), ["Çağdaş Other", "Çağla Işık"])
+        self.assertEqual(names(self.client.get("/search?q=ISIK").get_json(), "students"), ["Çağla Işık"])
+        self.assertEqual(names(self.client.get("/search?q=sule").get_json(), "teachers"), ["Şule Hoca"])
+        self.assertEqual(self.client.get("/search?q=unassigned").get_json()["teachers"], [])
+        self.assertEqual(self.client.get("/search?q=").get_json(), {"students": [], "teachers": []})
+        self.assertIn(b'class="global-search"', self.client.get("/").data)
+        self.client.post("/logout")
+
+        self.add_user("search-teacher", "teacher", teacher_id=teacher_id)
+        self.sign_in_as("search-teacher", "a-secure-test-password")
+        mine = self.client.get("/search?q=cag").get_json()
+        self.assertEqual(names(mine, "students"), ["Çağla Işık"])                 # only own class
+        self.assertEqual(self.client.get("/search?q=sule").get_json()["teachers"], [])
+        self.client.post("/logout")
+
+        self.add_user("search-student", "student", student_id=student_id)
+        self.sign_in_as("search-student", "a-secure-test-password")
+        self.assertEqual(self.client.get("/search?q=cag").get_json(), {"students": [], "teachers": []})
+        self.assertIn(b'class="global-search"', self.client.get("/").data)
+
+    def test_class_filter_ignores_case_spacing_and_turkish_letters(self):
+        self.sign_in()
+        with self.app.app_context():
+            db = get_db()
+            teacher_id = db.execute(
+                "INSERT INTO teachers (name,email,subject) VALUES ('T','t@x.test','S')").lastrowid
+            g4 = db.execute("INSERT INTO courses (name,code,teacher_id) VALUES ('Grade 4','G4',?)", (teacher_id,)).lastrowid
+            g5 = db.execute("INSERT INTO courses (name,code,teacher_id) VALUES ('Grade 5','G5',?)", (teacher_id,)).lastrowid
+            sinif = db.execute("INSERT INTO courses (name,code,teacher_id) VALUES ('5. Sınıf','S5',?)", (teacher_id,)).lastrowid
+            year = int(db.execute("SELECT value FROM settings WHERE key='academic_year'").fetchone()[0][:4])
+            def student(name, grade_level, course=None):
+                sid = db.execute(
+                    "INSERT INTO students (name,email,grade_level) VALUES (?,?,?)",
+                    (name, name.replace(" ", "").lower() + "@x.test", grade_level)).lastrowid
+                if course:
+                    db.execute("INSERT INTO enrollments (student_id,course_id,academic_year) VALUES (?,?,?)",
+                               (sid, course, year))
+            student("Enrolled Four", "Grade 4", g4)
+            student("Typed Four", "  grade   4 ")          # no enrollment, messy text
+            student("Upper Four", "GRADE 4")
+            student("Enrolled Five", "Grade 5", g5)
+            student("Zed Sinif", "5. SINIF")                # Turkish upper-case I
+            db.commit()
+        def visible(path):
+            page = self.client.get(path).data.decode()
+            rows = re.findall(r'<tr class="student-item"([^>]*)>', page)
+            return sorted(re.search(r'data-name="([^"]+)"', r).group(1) for r in rows if " hidden" not in r)
+        base = "/student-registration?tab=student"
+        self.assertEqual(visible(f"{base}&registered_course_id={g4}"), ["Enrolled Four", "Typed Four", "Upper Four"])
+        self.assertEqual(visible(f"{base}&registered_course_id={g5}"), ["Enrolled Five"])
+        self.assertEqual(visible(f"{base}&registered_course_id={sinif}"), ["Zed Sinif"])
+        everyone = visible(base)                              # no class selected: all, A-Z
+        self.assertEqual(everyone, sorted(everyone))
+        self.assertEqual(len(everyone), 5)
+        html = self.client.get(base).data.decode()
+        self.assertEqual(html.index("Enrolled Five") < html.index("Zed Sinif"), True)
+        # server-computed keys are what the JS compares against
+        self.assertIn('data-class-key="grade 4"', html)
+        self.assertIn('data-class-key="5. sinif"', html)
+
+    def test_registration_auto_creates_classes_and_sorts_a_to_z(self):
+        self.sign_in()
+        def register(name, email, class_name):
+            return self.client.post(
+                "/student-registration",
+                data={"name": name, "email": email, "class_name": class_name},
+                follow_redirects=True,
+            )
+        first = register("Zeynep Z", "z@example.test", "4. Sınıf")
+        self.assertEqual(first.status_code, 200)
+        self.assertIn("Class created automatically.".encode(), first.data)
+        register("Ali A", "a@example.test", "  4.   sınıf ")      # same class, messy typing
+        register("Çağla Ç", "c@example.test", "4. Sınıf")
+        register("Ece E", "e@example.test", "10. Sınıf")
+        register("Mert M", "m@example.test", "5. Sınıf")
+        with self.app.app_context():
+            db = get_db()
+            names = [r["name"] for r in db.execute("SELECT name FROM courses").fetchall()]
+            self.assertEqual(sorted(names), ["10. Sınıf", "4. Sınıf", "5. Sınıf"])
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM enrollments e JOIN courses c ON c.id=e.course_id "
+                           "WHERE c.name='4. Sınıf'").fetchone()[0], 3)
+            # the placeholder teacher never shows up in teacher lists or counts
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM teachers WHERE email='unassigned@school.invalid'").fetchone()[0], 1)
+        page = self.client.get("/student-registration?tab=student").data.decode()
+        self.assertLess(page.index("4. Sınıf</a>"), page.index("5. Sınıf</a>"))
+        self.assertLess(page.index("5. Sınıf</a>"), page.index("10. Sınıf</a>"))   # numeric order
+        listing = self.client.get("/student-registration?tab=student").data.decode()
+        self.assertLess(listing.index("Ali A"), listing.index("Çağla Ç"))
+        self.assertLess(listing.index("Çağla Ç"), listing.index("Zeynep Z"))
+        self.assertNotIn("unassigned@school.invalid", self.client.get("/manage/teachers").data.decode())
+        self.assertNotIn("unassigned@school.invalid", self.client.get("/export/data/teachers?format=csv").data.decode())
+
+    def test_export_engine_is_available_on_every_list_with_role_scoping(self):
+        import io as _io
+        from openpyxl import load_workbook
+
+        teacher_id, course_id, other_course_id, enrollment_ids = (
+            self._create_academic_test_records()
+        )
+        with self.app.app_context():
+            db = get_db()
+            db.execute(
+                "INSERT INTO grades (enrollment_id,score,graded_on,exam_name) VALUES (?,?,?,?)",
+                (enrollment_ids[0], 81, "2026-10-01", "Quiz 1"),
+            )
+            db.execute(
+                "INSERT INTO grades (enrollment_id,score,graded_on,exam_name) VALUES (?,?,?,?)",
+                (enrollment_ids[2], 55, "2026-10-01", "English Quiz"),
+            )
+            db.execute(
+                "INSERT INTO attendance (enrollment_id,attendance_date,status) VALUES (?,?,?)",
+                (enrollment_ids[0], "2026-10-12", "Late"),
+            )
+            db.execute(
+                "INSERT INTO health_reports (student_id,report_type,reported_at,details) "
+                "SELECT student_id,'health','2026-10-01','SECRET-HEALTH-NOTE' "
+                "FROM enrollments WHERE id=?", (enrollment_ids[0],),
+            )
+            student_ids = [
+                r[0] for r in db.execute(
+                    "SELECT student_id FROM enrollments ORDER BY id").fetchall()
+            ]
+            db.commit()
+        self.sign_in()
+
+        def book(response):
+            self.assertEqual(response.status_code, 200)
+            return load_workbook(_io.BytesIO(response.data))
+
+        # Every list exports as Excel (default) or CSV.
+        for resource in ("students", "teachers", "courses", "enrollments", "grades", "attendance"):
+            self.assertEqual(self.client.get(f"/export/data/{resource}").status_code, 200, resource)
+            csv_response = self.client.get(f"/export/data/{resource}?format=csv")
+            self.assertIn("text/csv", csv_response.headers["Content-Type"])
+        for path in ("/export/gradebook", "/export/attendance", "/export/homework",
+                     "/export/timetable", "/export/predica", "/export/boarding"):
+            self.assertEqual(self.client.get(path).status_code, 200, path)
+        self.assertEqual(self.client.get("/export/data/grades?format=pdf").status_code, 400)
+        self.assertEqual(self.client.get("/export/data/nope").status_code, 404)
+
+        grades = book(self.client.get(f"/export/gradebook?course_id={course_id}")).active
+        values = [c.value for row in grades.iter_rows(min_row=2) for c in row]
+        self.assertIn("Quiz 1", values)
+        self.assertNotIn("English Quiz", values)
+        day = book(self.client.get(
+            f"/export/attendance?course_id={course_id}&attendance_date=2026-10-12")).active
+        statuses = [row[4].value for row in day.iter_rows(min_row=2)]
+        self.assertEqual(sorted(statuses), ["Attendance not taken", "Late"])
+
+        # The pages themselves show the export menu.
+        for path in ("/manage/students", "/gradebook", "/attendance", "/homework",
+                     "/timetable", "/predica", "/admin/boarding", "/student-registration"):
+            self.assertIn(b"export-menu", self.client.get(path).data, path)
+
+        # Full per-student workbook excludes health notes.
+        full = self.client.get(f"/export/student/{student_ids[0]}")
+        workbook = book(full)
+        self.assertEqual(
+            workbook.sheetnames,
+            ["Student Information", "Exams & grades", "Attendance", "Homework"],
+        )
+        self.assertNotIn(b"SECRET-HEALTH-NOTE", full.data)
+        self.client.post("/logout")
+
+        # Teachers only get their own classes and students.
+        self.add_user("export-scope-teacher", "teacher", teacher_id=teacher_id)
+        self.sign_in_as("export-scope-teacher", "a-secure-test-password")
+        self.assertEqual(self.client.get(f"/export/gradebook?course_id={other_course_id}").status_code, 403)
+        self.assertEqual(self.client.get(f"/export/attendance?course_id={other_course_id}").status_code, 403)
+        self.assertEqual(self.client.get(f"/export/student/{student_ids[2]}").status_code, 403)
+        self.assertEqual(self.client.get(f"/export/student/{student_ids[0]}").status_code, 200)
+        own = book(self.client.get("/export/gradebook")).active
+        self.assertNotIn("English Quiz", [c.value for r in own.iter_rows() for c in r])
+        self.assertEqual(self.client.get("/export/boarding").status_code, 403)
+        self.client.post("/logout")
+
+        # Students and parents can only export their own record.
+        self.add_user("export-student", "student", student_id=student_ids[0])
+        self.add_user("export-parent", "parent", student_id=student_ids[0])
+        for username in ("export-student", "export-parent"):
+            self.sign_in_as(username, "a-secure-test-password")
+            self.assertEqual(self.client.get(f"/export/student/{student_ids[0]}").status_code, 200)
+            self.assertEqual(self.client.get(f"/export/student/{student_ids[1]}").status_code, 403)
+            self.assertEqual(self.client.get("/export/data/students").status_code, 403)
+            self.assertEqual(self.client.get("/export/gradebook").status_code, 403)
+            self.assertIn(b"export-menu", self.client.get("/").data)
+            self.client.post("/logout")
 
     def test_student_csv_export_uses_academic_year_and_enforces_privacy_roles(self):
         teacher_id, _, _, enrollment_ids = self._create_academic_test_records()

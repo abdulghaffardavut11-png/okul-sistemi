@@ -33,6 +33,29 @@ CREATE TABLE IF NOT EXISTS teachers (
     email TEXT NOT NULL UNIQUE,
     subject TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS translations (
+    language TEXT NOT NULL,
+    source TEXT NOT NULL,
+    text TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (language, source)
+);
+CREATE TABLE IF NOT EXISTS dashboard_blocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL DEFAULT 'block' CHECK (kind IN ('announcement', 'block')),
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    link_label TEXT NOT NULL DEFAULT '',
+    link_url TEXT NOT NULL DEFAULT '',
+    tone TEXT NOT NULL DEFAULT 'info' CHECK (tone IN ('info', 'success', 'warning', 'danger')),
+    audience TEXT NOT NULL DEFAULT 'all',
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    display_order INTEGER NOT NULL DEFAULT 0,
+    starts_on TEXT NOT NULL DEFAULT '',
+    ends_on TEXT NOT NULL DEFAULT '',
+    created_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS courses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -327,6 +350,17 @@ def init_db():
         "staff_updates",
         {"scheduled_at": "TEXT"},
     )
+    _add_columns(
+        db,
+        "announcements",
+        {
+            "period": "TEXT NOT NULL DEFAULT 'weekly'",
+            "expires_at": "TEXT NOT NULL DEFAULT ''",
+            "expiry_custom": "INTEGER NOT NULL DEFAULT 0",
+            "archived_at": "TEXT NOT NULL DEFAULT ''",
+            "archive_reason": "TEXT NOT NULL DEFAULT ''",
+        },
+    )
     db.executescript(
         """
         CREATE TABLE IF NOT EXISTS summer_school_records (
@@ -377,12 +411,34 @@ def init_db():
         ("ai_enabled", "0"),
     ):
         db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
+    _repair_class_names(db)
     db.commit()
     current_app.teardown_appcontext(close_db)
+
+
+def _repair_class_names(db):
+    """One-time: a class saved as name "grade" + code "4" becomes "Grade 4" (names were all identical)."""
+    if db.execute("SELECT 1 FROM settings WHERE key='migration_class_names_v1'").fetchone():
+        return
+    generic = {"grade", "class", "sınıf", "sinif", "level"}
+    for row in db.execute("SELECT id,name,code FROM courses").fetchall():
+        name = (row["name"] or "").strip()
+        code = (row["code"] or "").strip()
+        if name.lower() in generic and code and len(code) <= 3 and code.isalnum():
+            db.execute(
+                "UPDATE courses SET name=? WHERE id=?",
+                (f"{name.capitalize()} {code.upper()}", row["id"]),
+            )
+    db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_class_names_v1', 'done')")
 
 
 def _add_columns(db, table, columns):
     existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
     for name, declaration in columns.items():
         if name not in existing:
-            db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+            try:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+            except sqlite3.OperationalError as error:
+                # Two gunicorn workers can start together; the loser sees the column already added.
+                if "duplicate column" not in str(error).lower():
+                    raise

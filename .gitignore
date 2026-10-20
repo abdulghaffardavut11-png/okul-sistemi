@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+# Live data stays on the server disk (see render.yaml), never in git
+instance/*.sqlite3
+instance/uploads/

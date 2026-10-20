@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Translations'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <style>
+    .tr-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
+    .tr-tabs a{padding:8px 14px;border-radius:999px;border:1px solid var(--line,#e4e7ec);text-decoration:none;font-weight:700;font-size:.85rem;color:inherit;background:#fff}
+    .tr-tabs a.active{background:var(--primary,#1758a6);border-color:var(--primary,#1758a6);color:#fff}
+    .tr-bar{height:8px;border-radius:999px;background:#e4e7ec;overflow:hidden;margin:6px 0 4px}
+    .tr-bar span{display:block;height:100%;background:#16803c}
+    .tr-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+    .tr-tools input[type=search]{flex:1 1 220px;max-width:360px;min-height:38px;padding:6px 12px;border:1px solid #dce2ea;border-radius:10px}
+    .tr-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;padding:12px 0;border-top:1px solid var(--line,#e4e7ec)}
+    .tr-row .src{font-size:.88rem;overflow-wrap:anywhere}
+    .tr-row textarea{width:100%;min-height:44px;padding:8px 10px;border:1px solid #dce2ea;border-radius:8px;font:inherit;font-size:.88rem}
+    .tr-badge{display:inline-block;margin-top:4px;padding:2px 8px;border-radius:999px;font-size:.66rem;font-weight:800}
+    .tr-badge.missing{background:#fff0ef;color:#b42318}.tr-badge.custom{background:#eaf2ff;color:#1758a6}.tr-badge.built-in{background:#eaf7ee;color:#16803c}
+    .tr-pager{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:14px}
+    @media(max-width:640px){.tr-row{grid-template-columns:1fr}}
+  </style>
+  <section class="page-title-row"><div><span class="eyebrow">{{ 'Super Admin'|translate(language) }}</span><h1>{{ 'Translations'|translate(language) }}</h1>
+    <p class="muted">{{ 'Complete or correct any language. Anything left empty falls back to English.'|translate(language) }}</p></div>
+    <a class="button-small secondary-button" href="{{ url_for('views.interface_settings') }}">{{ 'Interface control'|translate(language) }}</a></section>
+  <nav class="tr-tabs">
+    {% for code, label in languages.items() if code != 'en' %}<a class="{{ 'active' if code == edit_language else '' }}" href="{{ url_for('views.translation_settings', lang=code) }}">{{ label }}</a>{% endfor %}
+  </nav>
+  <section class="portal-card">
+    <h2>{{ languages[edit_language] }}</h2>
+    <div class="tr-bar" role="progressbar" aria-valuemin="0" aria-valuemax="{{ total }}" aria-valuenow="{{ done }}"><span style="width:{{ (done * 100 / total)|round(0)|int if total else 0 }}%"></span></div>
+    <p class="muted">{{ done }} / {{ total }} {{ 'translated'|translate(language) }}{% if fallback %} · {{ 'Missing texts are shown in'|translate(language) }} {{ languages[fallback] }}{% endif %}</p>
+    <div class="tr-tools">
+      <form method="get" style="display:contents">
+        <input type="hidden" name="lang" value="{{ edit_language }}">
+        <input type="search" name="q" value="{{ q }}" placeholder="{{ 'Search text'|translate(language) }}">
+        <select name="filter" onchange="this.form.submit()"><option value="all" {{ 'selected' if show != 'missing' }}>{{ 'All texts'|translate(language) }}</option><option value="missing" {{ 'selected' if show == 'missing' }}>{{ 'Only missing'|translate(language) }}</option></select>
+        <button class="button-small secondary-button" type="submit">{{ 'Search'|translate(language) }}</button>
+      </form>
+      <a class="button-small secondary-button" href="{{ url_for('views.export_translations', lang=edit_language, missing=1, format='xlsx') }}">⇩ {{ 'Missing texts for translators'|translate(language) }}</a>
+      <a class="button-small secondary-button" href="{{ url_for('views.export_translations', lang=edit_language, format='csv') }}">⇩ CSV</a>
+    </div>
+    <form method="post" enctype="multipart/form-data" class="tr-tools">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="import"><input type="hidden" name="lang" value="{{ edit_language }}">
+      <input type="file" name="file" accept=".csv,.xlsx" required aria-label="{{ 'Choose a file'|translate(language) }}">
+      <button class="button-small" type="submit">{{ 'Import translations'|translate(language) }}</button>
+      <small class="muted">{{ 'Columns: Source, Translation. Only texts that exist in the portal are imported.'|translate(language) }}</small>
+    </form>
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="save">
+      <input type="hidden" name="lang" value="{{ edit_language }}"><input type="hidden" name="filter" value="{{ show }}"><input type="hidden" name="q" value="{{ q }}"><input type="hidden" name="page" value="{{ page }}">
+      {% for source, text, status in rows %}
+        <div class="tr-row">
+          <div class="src">{{ source }}<br><span class="tr-badge {{ status }}">{{ status|capitalize|translate(language) }}</span>
+            <input type="hidden" name="source_{{ loop.index0 }}" value="{{ source }}"></div>
+          <textarea name="text_{{ loop.index0 }}" maxlength="500" rows="2" lang="{{ edit_language }}" {% if edit_language == 'ar' %}dir="rtl"{% endif %}>{{ text }}</textarea>
+        </div>
+      {% else %}<p class="muted">{{ 'Nothing to show.'|translate(language) }}</p>{% endfor %}
+      {% if rows %}<button type="submit" class="roll-save" style="width:100%;min-height:46px;margin-top:10px">{{ 'Save translations'|translate(language) }}</button>{% endif %}
+    </form>
+    {% if pages > 1 %}<div class="tr-pager">
+      {% if page > 1 %}<a class="button-small secondary-button" href="{{ url_for('views.translation_settings', lang=edit_language, filter=show, q=q or None, page=page - 1) }}">←</a>{% endif %}
+      <span>{{ page }} / {{ pages }}</span>
+      {% if page < pages %}<a class="button-small secondary-button" href="{{ url_for('views.translation_settings', lang=edit_language, filter=show, q=q or None, page=page + 1) }}">→</a>{% endif %}
+    </div>{% endif %}
+  </section>
+{% endblock %}

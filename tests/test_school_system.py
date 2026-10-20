@@ -1241,6 +1241,80 @@ class SchoolSystemTestCase(unittest.TestCase):
                 "SELECT e.id FROM enrollments e JOIN students s ON s.id=e.student_id "
                 "WHERE s.name=? AND e.course_id=?", (student_name, course_id)).fetchone()[0]
 
+    def test_class_rename_and_merge_delete_for_duplicate_classes_and_menu_cleanup(self):
+        self.sign_in()
+        with self.app.app_context():
+            db = get_db()
+            t1 = db.execute("INSERT INTO teachers (name,email,subject) VALUES ('Yakubu','y@x.test','S')").lastrowid
+            t2 = db.execute("INSERT INTO teachers (name,email,subject) VALUES ('Alhassan','a@x.test','S')").lastrowid
+            upper = db.execute("INSERT INTO courses (name,code,teacher_id) VALUES ('GRADE 5','grade 5',?)", (t1,)).lastrowid
+            lower = db.execute("INSERT INTO courses (name,code,teacher_id) VALUES ('Grade 5','5',?)", (t2,)).lastrowid
+            typo = db.execute("INSERT INTO courses (name,code,teacher_id) VALUES ('Gradee 6','6',?)", (t2,)).lastrowid
+            def student(name, level):
+                return db.execute("INSERT INTO students (name,email,grade_level) VALUES (?,?,?)",
+                                  (name, name.replace(" ", "").lower() + "@x.test", level)).lastrowid
+            both = student("In Both", "Grade 5")
+            only_upper = student("Only Upper", "GRADE 5")
+            six = student("Six Kid", "Gradee 6")
+            def enroll(sid, cid):
+                return db.execute("INSERT INTO enrollments (student_id,course_id,academic_year) VALUES (?,?,2026)", (sid, cid)).lastrowid
+            e_both_up, e_both_low, e_only = enroll(both, upper), enroll(both, lower), enroll(only_upper, upper)
+            e_six = enroll(six, typo)
+            db.execute("INSERT INTO grades (enrollment_id,score,graded_on,exam_name) VALUES (?,70,'2026-10-01','Quiz')", (e_both_up,))
+            db.execute("INSERT INTO attendance (enrollment_id,attendance_date,status) VALUES (?,'2026-10-02','Late')", (e_both_up,))
+            db.execute("INSERT INTO attendance (enrollment_id,attendance_date,status) VALUES (?,'2026-10-03','Absent')", (e_only,))
+            db.execute("INSERT INTO homework (course_id,title,description,due_date) VALUES (?,'HW','d','2026-11-01')", (upper,))
+            db.execute("INSERT INTO timetable (course_id,weekday,starts_at,ends_at,room) VALUES (?,1,'08:00','09:00','R1')", (upper,))
+            db.commit()
+        page = self.client.get("/admin/classes").data.decode()
+        self.assertGreaterEqual(page.count("Duplicate name"), 2)                    # both Grade 5 rows are flagged
+        self.assertIn('value="update"', page)
+        self.assertNotIn("Export Students", self.client.get("/").data.decode())     # menu cleanup
+
+        # a plain delete is still refused while the class has students
+        refused = self.client.post("/admin/classes", data={"action": "delete", "course_id": upper}, follow_redirects=True)
+        self.assertIn(b"cannot be deleted", refused.data)
+
+        # rename: fix a typo; names already used by another class are refused
+        self.assertIn(b"Another class already has this name",
+                      self.client.post("/admin/classes", data={"action": "update", "course_id": typo, "name": " grade   5 ",
+                                                               "code": "6", "teacher_id": t2}, follow_redirects=True).data)
+        ok = self.client.post("/admin/classes", data={"action": "update", "course_id": typo, "name": "Grade 6",
+                                                      "code": "6", "teacher_id": t1}, follow_redirects=True)
+        self.assertIn(b"Class updated.", ok.data)
+        with self.app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT name,teacher_id FROM courses WHERE id=?", (typo,)).fetchone()[:], ("Grade 6", t1))
+            self.assertEqual(db.execute("SELECT grade_level FROM students WHERE id=?", (six,)).fetchone()[0], "Grade 6")
+        self.assertEqual(self.client.post("/admin/classes", data={"action": "update", "course_id": 99999, "name": "x", "code": "c", "teacher_id": t1}).status_code, 404)
+
+        # merge the duplicate: nothing is lost, the conflicting enrollment is folded together
+        merged = self.client.post("/admin/classes", data={"action": "delete", "course_id": upper, "move_to": lower}, follow_redirects=True)
+        self.assertIn(b"the class was deleted", merged.data)
+        with self.app.app_context():
+            db = get_db()
+            self.assertIsNone(db.execute("SELECT 1 FROM courses WHERE id=?", (upper,)).fetchone())
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM enrollments WHERE course_id=?", (lower,)).fetchone()[0], 2)   # In Both once
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM enrollments WHERE student_id=?", (both,)).fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM grades g JOIN enrollments e ON e.id=g.enrollment_id WHERE e.course_id=?", (lower,)).fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM attendance a JOIN enrollments e ON e.id=a.enrollment_id WHERE e.course_id=?", (lower,)).fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM homework WHERE course_id=?", (lower,)).fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM timetable WHERE course_id=?", (lower,)).fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT grade_level FROM students WHERE id=?", (only_upper,)).fetchone()[0], "Grade 5")
+        self.assertNotIn("Duplicate name", self.client.get("/admin/classes").data.decode())
+        bad = self.client.post("/admin/classes", data={"action": "delete", "course_id": lower, "move_to": lower}, follow_redirects=True)
+        self.assertIn(b"Choose a different class", bad.data)
+
+        # an empty class can still be deleted directly; only the Super Admin may manage classes
+        with self.app.app_context():
+            empty = get_db().execute("INSERT INTO courses (name,code,teacher_id) VALUES ('Empty','E',?)", (t1,)).lastrowid
+            get_db().commit()
+        self.assertIn(b"Class deleted successfully.", self.client.post("/admin/classes", data={"action": "delete", "course_id": empty}, follow_redirects=True).data)
+        self.client.post("/logout")
+        self.add_user("class-mgr", "manager")
+        self.sign_in_as("class-mgr", "a-secure-test-password")
+        self.assertEqual(self.client.post("/admin/classes", data={"action": "update", "course_id": lower}).status_code, 403)
+
     def test_version_stamp_shows_which_build_is_live(self):
         health = self.client.get("/healthz").get_json()
         self.assertEqual(health["status"], "ok")

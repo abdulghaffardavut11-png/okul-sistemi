@@ -40,17 +40,44 @@
             <article class="class-management-item">
               <div class="class-management-heading">
                 <div>
-                  <h3>{{ course.name }} <small>{{ course.code }}</small></h3>
+                  <h3>{{ course.name }} <small>{{ course.code }}</small>{% if class_key(course.name) in duplicate_keys %} <span class="role-pill" style="background:#fff0ef;color:#b42318">{{ 'Duplicate name'|translate(language) }}</span>{% endif %}</h3>
                   <p>{{ 'Assigned teacher'|translate(language) }}: {{ course.teacher_name }}</p>
                   <p>{{ course.current_year_count }} {{ 'students enrolled'|translate(language) }} · {{ course.enrollment_count }} {{ 'total enrollments'|translate(language) }}</p>
                 </div>
-                <form method="post" onsubmit="return confirm('{{ 'Delete this class? Classes with linked records cannot be deleted.'|translate(language) }}');">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <input type="hidden" name="action" value="delete">
-                  <input type="hidden" name="course_id" value="{{ course.id }}">
-                  <button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button>
-                </form>
               </div>
+              <details {% if class_key(course.name) in duplicate_keys %}open{% endif %}>
+                <summary>{{ 'Edit / rename'|translate(language) }}</summary>
+                <form method="post" class="stack" style="margin-top:10px">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="update"><input type="hidden" name="course_id" value="{{ course.id }}">
+                  <label>{{ 'Class name'|translate(language) }}<input name="name" value="{{ course.name }}" maxlength="120" required></label>
+                  <label>{{ 'Class code'|translate(language) }}<input name="code" value="{{ course.code }}" maxlength="40" required></label>
+                  <label>{{ 'Assigned teacher'|translate(language) }}
+                    <select name="teacher_id" required>
+                      <option value="">{{ 'Choose a teacher'|translate(language) }}</option>
+                      {% for teacher in teachers %}<option value="{{ teacher.id }}" {% if teacher.id == course.teacher_id %}selected{% endif %}>{{ teacher.name }}{% if teacher.subject %} · {{ teacher.subject }}{% endif %}</option>{% endfor %}
+                    </select></label>
+                  <button type="submit">{{ 'Save changes'|translate(language) }}</button>
+                </form>
+              </details>
+              <details {% if class_key(course.name) in duplicate_keys %}open{% endif %}>
+                <summary>{{ 'Delete / merge'|translate(language) }}</summary>
+                <p class="muted" style="margin:8px 0">{{ 'Students, grades, attendance, homework and timetable move to the class you choose, then this class is deleted.'|translate(language) }}</p>
+                <form method="post" class="stack" onsubmit="return confirm('{{ 'Move everything to the chosen class and delete this one?'|translate(language)|e }}');">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="course_id" value="{{ course.id }}">
+                  <label>{{ 'Move students and records to'|translate(language) }}
+                    <select name="move_to" required>
+                      <option value="">{{ 'Choose a class'|translate(language) }}</option>
+                      {% for other in classes if other.id != course.id %}<option value="{{ other.id }}" {% if class_key(other.name) == class_key(course.name) %}selected{% endif %}>{{ other.name }} · {{ other.code }} ({{ other.teacher_name }})</option>{% endfor %}
+                    </select></label>
+                  <button class="button-small danger-button" type="submit">{{ 'Move students and delete'|translate(language) }}</button>
+                </form>
+                {% if not course.enrollment_count %}
+                  <form method="post" style="margin-top:8px" onsubmit="return confirm('{{ 'Delete this class? Classes with linked records cannot be deleted.'|translate(language)|e }}');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="course_id" value="{{ course.id }}">
+                    <button class="button-small danger-button" type="submit">{{ 'Delete empty class'|translate(language) }}</button>
+                  </form>
+                {% endif %}
+              </details>
               <details>
                 <summary>{{ 'View enrolled students'|translate(language) }}</summary>
                 {% if rosters[course.id] %}

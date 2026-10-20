@@ -122,3 +122,10 @@ when Node is installed).
 * A student whose class text matches a class (case/spacing/Turkish letters ignored) is enrolled automatically for the
   current academic year, so attendance, grades, exports and the dashboard see them. Two classes with the same name
   (e.g. `GRADE 5` and `Grade 5`) both receive the student – delete the duplicate in Class Management.
+
+## Class management
+
+`/admin/classes` (Super Admin): add, **edit / rename** (name, code, teacher) and **delete**. A class that still has
+students or records is deleted with *Move students and delete*: enrollments, grades, attendance, homework and timetable
+move to the class you choose (a student already in the target keeps one enrollment, records are merged) and the students'
+class text follows. Classes whose names differ only by case/spacing (`GRADE 5` / `Grade 5`) are flagged "Duplicate name".

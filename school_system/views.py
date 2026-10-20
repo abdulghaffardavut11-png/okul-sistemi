@@ -285,7 +285,6 @@ PORTAL_GROUPS = [
         ("Performance Reports", "reports", "views.manage", "grades"),
         ("Performance Forecast", "predica", "views.predica"),
         ("Daily Attendance", "attendance", "views.attendance_roster"),
-        ("Export Students (CSV)", "export", "views.export_students"),
         ("Staff Updates & Logs", "updates", "views.staff_updates"),
     ]),
     ("User Account", [
@@ -2718,6 +2717,51 @@ def profile():
     return render_template("profile.html", user=_current_user(), role_labels=ROLE_LABELS)
 
 
+def _merge_class(db, source_id, target_id):
+    """Move everything in one class into another, then delete the emptied class."""
+    source = db.execute("SELECT id,name FROM courses WHERE id=?", (source_id,)).fetchone()
+    target = db.execute("SELECT id,name FROM courses WHERE id=?", (target_id,)).fetchone()
+    if source is None or target is None or source_id == target_id:
+        abort(400)
+    for enrollment in db.execute(
+        "SELECT id,student_id,academic_year FROM enrollments WHERE course_id=?", (source_id,)
+    ).fetchall():
+        kept = db.execute(
+            "SELECT id FROM enrollments WHERE course_id=? AND student_id=? AND academic_year=?",
+            (target_id, enrollment["student_id"], enrollment["academic_year"]),
+        ).fetchone()
+        if kept:  # student already in the target: fold the records into that enrollment
+            db.execute("UPDATE grades SET enrollment_id=? WHERE enrollment_id=?", (kept["id"], enrollment["id"]))
+            db.execute(
+                "UPDATE OR IGNORE attendance SET enrollment_id=? WHERE enrollment_id=?",
+                (kept["id"], enrollment["id"]),
+            )
+            db.execute("DELETE FROM attendance WHERE enrollment_id=?", (enrollment["id"],))
+            db.execute("DELETE FROM enrollments WHERE id=?", (enrollment["id"],))
+        else:
+            db.execute("UPDATE enrollments SET course_id=? WHERE id=?", (target_id, enrollment["id"]))
+    db.execute("UPDATE homework SET course_id=? WHERE course_id=?", (target_id, source_id))
+    db.execute("UPDATE timetable SET course_id=? WHERE course_id=?", (target_id, source_id))
+    _retitle_students(db, source["name"], target["name"], source_id, merged_into=target_id)
+    db.execute("DELETE FROM courses WHERE id=?", (source_id,))
+    return source["name"], target["name"]
+
+
+def _retitle_students(db, old_name, new_name, course_id, merged_into=None):
+    """Students' class text follows a rename/merge (unless another class still uses the old name)."""
+    old_key = _class_key(old_name)
+    skip = {course_id, merged_into}
+    if any(
+        _class_key(c["name"]) == old_key
+        for c in db.execute("SELECT id,name FROM courses").fetchall()
+        if c["id"] not in skip
+    ):
+        return
+    for student in db.execute("SELECT id,grade_level FROM students WHERE grade_level<>''").fetchall():
+        if _class_key(student["grade_level"]) == old_key:
+            db.execute("UPDATE students SET grade_level=? WHERE id=?", (new_name, student["id"]))
+
+
 @bp.route("/admin/classes", methods=("GET", "POST"))
 @roles_required("super_admin")
 def manage_classes():
@@ -2750,6 +2794,39 @@ def manage_classes():
                 except sqlite3.IntegrityError as error:
                     db.rollback()
                     flash(_integrity_message(error), "error")
+        elif action == "update":
+            course_id = _optional_int(request.form.get("course_id"))
+            course = db.execute("SELECT id,name FROM courses WHERE id=?", (course_id,)).fetchone() if course_id else None
+            if course is None:
+                abort(404)
+            name = _clean_class_name(request.form.get("name", ""))
+            code = request.form.get("code", "").strip()
+            teacher_id = _optional_int(request.form.get("teacher_id"))
+            if not name or len(name) > 120:
+                flash("Class name must contain 1–120 characters.", "error")
+            elif not code or len(code) > 40:
+                flash("Class code must contain 1–40 characters.", "error")
+            elif not teacher_id or not db.execute("SELECT 1 FROM teachers WHERE id=?", (teacher_id,)).fetchone():
+                flash("Select an existing teacher profile.", "error")
+            elif any(
+                _class_key(other["name"]) == _class_key(name)
+                for other in db.execute("SELECT name FROM courses WHERE id<>?", (course_id,)).fetchall()
+            ):
+                flash("Another class already has this name. Use “Move students and delete” to merge them.", "error")
+            else:
+                try:
+                    db.execute(
+                        "UPDATE courses SET name=?,code=?,teacher_id=? WHERE id=?",
+                        (name, code, teacher_id, course_id),
+                    )
+                    if name != course["name"]:
+                        _retitle_students(db, course["name"], name, course_id)
+                    db.commit()
+                    flash("Class updated.", "success")
+                    return redirect(url_for("views.manage_classes"))
+                except sqlite3.IntegrityError as error:
+                    db.rollback()
+                    flash(_integrity_message(error), "error")
         elif action == "delete":
             course_id = _optional_int(request.form.get("course_id"))
             if not course_id:
@@ -2759,6 +2836,20 @@ def manage_classes():
             ).fetchone()
             if course is None:
                 abort(404)
+            move_to = _optional_int(request.form.get("move_to"))
+            if move_to:
+                if move_to == course_id or not db.execute("SELECT 1 FROM courses WHERE id=?", (move_to,)).fetchone():
+                    flash("Choose a different class to move the students into.", "error")
+                else:
+                    try:
+                        _merge_class(db, course_id, move_to)
+                        db.commit()
+                        flash("Students and records were moved and the class was deleted.", "success")
+                        return redirect(url_for("views.manage_classes"))
+                    except sqlite3.IntegrityError as error:
+                        db.rollback()
+                        flash(_integrity_message(error), "error")
+                return redirect(url_for("views.manage_classes"))
             dependencies = db.execute(
                 "SELECT "
                 "(SELECT COUNT(*) FROM enrollments WHERE course_id=?) + "
@@ -2771,6 +2862,7 @@ def manage_classes():
                     "This class has dependent enrollments, homework, or timetable entries and cannot be deleted.",
                     "error",
                 )
+                flash("Tip: open “Delete / merge” and move the students to another class first.", "error")
             else:
                 db.execute("DELETE FROM courses WHERE id=?", (course_id,))
                 db.commit()
@@ -2810,8 +2902,14 @@ def manage_classes():
     teachers = db.execute(
         "SELECT id,name,subject FROM teachers WHERE email <> 'unassigned@school.invalid' ORDER BY name"
     ).fetchall()
+    key_counts = {}
+    for course in classes:
+        key_counts[_class_key(course["name"])] = key_counts.get(_class_key(course["name"]), 0) + 1
+    duplicate_keys = {k for k, n in key_counts.items() if n > 1}
     return render_template(
         "manage_classes.html",
+        duplicate_keys=duplicate_keys,
+        class_key=_class_key,
         classes=classes,
         rosters=rosters,
         teachers=teachers,

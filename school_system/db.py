@@ -412,6 +412,8 @@ def init_db():
     ):
         db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
     _repair_class_names(db)
+    # "Export Students (CSV)" left the side menu: every list now has its own Export button.
+    db.execute("DELETE FROM navigation_items WHERE url_endpoint='views.export_students'")
     db.commit()
     current_app.teardown_appcontext(close_db)
 

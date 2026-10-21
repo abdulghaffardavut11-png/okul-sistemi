@@ -94,7 +94,6 @@
         {% if errors %}
           <ul class="workflow-errors" role="alert">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
         {% endif %}
-        {% if courses %}
           <form method="post" class="workflow-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <label>{{ 'Student full name'|translate(language) }}
@@ -108,6 +107,12 @@
                 placeholder="4. Sınıf" value="{{ values.class_name }}">
               <datalist id="class-options">{% for course in courses %}<option value="{{ course.name }}">{% endfor %}</datalist>
               <small class="muted">{{ 'Type a class or pick one — a new class is created automatically.'|translate(language) }}</small>
+            </label>
+            <label>{{ 'Date of birth'|translate(language) }}
+              <input name="date_of_birth" type="date" min="1950-01-01" max="{{ today }}" value="{{ values.date_of_birth }}">
+            </label>
+            <label>{{ 'Place of birth'|translate(language) }}
+              <input name="place_of_birth" maxlength="120" value="{{ values.place_of_birth }}" autocomplete="off">
             </label>
             <label>{{ "Father's phone"|translate(language) }}
               <input name="father_phone" type="tel" maxlength="40" value="{{ values.father_phone }}" autocomplete="tel">
@@ -126,11 +131,6 @@
               <a class="button-small secondary-button" href="{{ url_for('views.manage', resource='students') }}">{{ 'Student Information'|translate(language) }}</a>
             </div>
           </form>
-        {% else %}
-          <div class="card-empty"><p>{{ 'Create a class before registering a student.'|translate(language) }}</p>
-            <a class="button-small secondary-button" href="{{ url_for('views.manage_classes') }}">{{ 'Class Management'|translate(language) }}</a>
-          </div>
-        {% endif %}
       </section>
 
       <section class="portal-section" aria-labelledby="class-roster-title">
@@ -168,6 +168,8 @@
                   data-mother-phone="{{ student.mother_phone or '' }}"
                   data-mother-occupation="{{ student.mother_occupation or '' }}"
                   data-address="{{ student.home_address or '' }}"
+                  data-birth="{{ student.birth_display }}"
+                  data-birthplace="{{ student.place_of_birth or '' }}"
                   data-picture="{% if student.profile_picture %}{{ url_for('views.profile_image', filename=student.profile_picture) }}{% endif %}">
                   <td class="name-cell">{{ student.name }}</td>
                 </tr>
@@ -222,6 +224,9 @@
         <h2 id="profile-name">{{ 'Select a student'|translate(language) }}</h2>
         <span class="profile-grade" id="profile-class">-</span>
       </div>
+      <div class="profile-section-title">{{ 'Personal information'|translate(language) }}</div>
+      <div class="info-row"><span class="info-label">{{ 'Date of birth'|translate(language) }}</span><span class="info-value" id="profile-birth">-</span></div>
+      <div class="info-row"><span class="info-label">{{ 'Place of birth'|translate(language) }}</span><span class="info-value" id="profile-birthplace">-</span></div>
       <div class="profile-section-title">{{ 'Father information'|translate(language) }}</div>
       <div class="info-row"><span class="info-label">{{ "Father's name"|translate(language) }}</span><span class="info-value" id="profile-father-name">-</span></div>
       <div class="info-row"><span class="info-label">{{ 'Phone'|translate(language) }}</span><span class="info-value" id="profile-father-phone">-</span></div>
@@ -247,7 +252,9 @@
         motherName: 'profile-mother-name',
         motherPhone: 'profile-mother-phone',
         motherOccupation: 'profile-mother-occupation',
-        address: 'profile-address'
+        address: 'profile-address',
+        birth: 'profile-birth',
+        birthplace: 'profile-birthplace'
       };
       const showStudentProfile = (card) => {
         studentCards.forEach((item) => item.setAttribute('aria-pressed', String(item === card)));

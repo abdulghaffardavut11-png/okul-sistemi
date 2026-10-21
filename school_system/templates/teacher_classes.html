@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Teacher Class Assignments'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <style>
+    .tc-card{margin-bottom:14px;scroll-margin-top:12px}
+    .tc-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:baseline}
+    .tc-classes{display:flex;flex-wrap:wrap;gap:8px 18px;margin:10px 0}
+    .tc-classes label{display:inline-flex;gap:6px;align-items:center;font-weight:600}
+    .tc-level{display:flex;flex-wrap:wrap;gap:6px 18px;margin:8px 0;font-size:.9rem}
+    .tc-level label{display:inline-flex;gap:6px;align-items:center}
+  </style>
+  <section class="page-title-row"><div><span class="eyebrow">{{ 'Super Admin'|translate(language) }}</span><h1>{{ 'Teacher Class Assignments'|translate(language) }}</h1>
+    <p class="muted">{{ 'Choose the classes each teacher can see. Teachers only see the students, grades and attendance of their own classes; administrators see every class.'|translate(language) }}</p></div>
+    <a class="button-small secondary-button" href="{{ url_for('views.manage_classes') }}">{{ 'Class Management'|translate(language) }}</a></section>
+  {% for teacher in teachers %}
+    <section class="portal-card tc-card" id="teacher-{{ teacher.id }}">
+      <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="teacher_id" value="{{ teacher.id }}">
+        <div class="tc-head"><h2 style="margin:0">{{ teacher.name }}</h2><span class="muted">{{ teacher.subject }} · {{ assigned[teacher.id]|length }} {{ 'classes'|translate(language) }}</span></div>
+        <div class="tc-level" role="radiogroup" aria-label="{{ 'Teaching level'|translate(language) }}">
+          <label><input type="radio" name="teaching_level" value="class" {% if teacher.teaching_level == 'class' %}checked{% endif %}> {{ 'Class teacher (primary school): one class'|translate(language) }}</label>
+          <label><input type="radio" name="teaching_level" value="subject" {% if teacher.teaching_level != 'class' %}checked{% endif %}> {{ 'Subject teacher (middle school): several classes'|translate(language) }}</label>
+        </div>
+        <div class="tc-classes">
+          {% for c in classes %}
+            <label><input type="checkbox" name="class_ids" value="{{ c.id }}" {% if c.id in assigned[teacher.id] %}checked{% endif %} {% if c.teacher_id == teacher.id %}disabled{% endif %}>
+              {{ c.name }}{% if c.teacher_id == teacher.id %} ★{% endif %}</label>
+            {% if c.teacher_id == teacher.id and c.id in assigned[teacher.id] %}<input type="hidden" name="class_ids" value="{{ c.id }}">{% endif %}
+          {% else %}<span class="muted">{{ 'No classes yet'|translate(language) }}</span>{% endfor %}
+        </div>
+        <p class="muted" style="margin:0 0 10px;font-size:.8rem">★ {{ 'Main teacher of the class. Change it under Class Management → Edit.'|translate(language) }}</p>
+        <button type="submit">{{ 'Save'|translate(language) }}</button>
+      </form>
+    </section>
+  {% else %}<section class="portal-card"><div class="card-empty"><p>{{ 'No teachers yet'|translate(language) }}</p></div></section>{% endfor %}
+{% endblock %}

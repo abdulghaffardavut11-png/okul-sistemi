@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ 'User accounts'|translate(language) }} · {{ school_name }}{% endblock %}
 {% block content %}
-  <section class="page-title-row"><div><span class="eyebrow">SUPER ADMINISTRATION</span><h1>{{ 'User accounts'|translate(language) }}</h1><p class="muted">{{ 'Create portal logins and assign each account to the right school role.'|translate(language) }}</p></div></section>
+  <section class="page-title-row"><div><span class="eyebrow">SUPER ADMINISTRATION</span><h1>{{ 'User accounts'|translate(language) }}</h1><p><a class="button-small secondary-button" href="{{ url_for('views.teacher_classes') }}">{{ 'Teacher Class Assignments'|translate(language) }}</a></p><p class="muted">{{ 'Create portal logins and assign each account to the right school role.'|translate(language) }}</p></div></section>
   <div class="admin-grid">
     <section class="portal-card user-form-card">
       <div class="card-heading"><div><span class="card-icon lavender">＋</span><div><h2>{{ 'Create account'|translate(language) }}</h2><p>{{ 'New accounts require a strong password.'|translate(language) }}</p></div></div></div>
@@ -14,6 +14,14 @@
         </select>
         <label for="teacher_id">{{ 'Teacher profile (for teachers)'|translate(language) }}</label><select id="teacher_id" name="teacher_id"><option value="">{{ 'Not applicable'|translate(language) }}</option>{% for teacher in teachers %}<option value="{{ teacher.id }}">{{ teacher.name }}</option>{% endfor %}</select>
         <label for="student_id">{{ 'Student profile (for students/parents)'|translate(language) }}</label><select id="student_id" name="student_id"><option value="">{{ 'Not applicable'|translate(language) }}</option>{% for student in students %}<option value="{{ student.id }}">{{ student.name }} · {{ student.email }}</option>{% endfor %}</select>
+        <fieldset class="class-picker" style="border:1px solid var(--line,#e4e7ec);border-radius:12px;padding:10px 12px;margin:4px 0">
+          <legend style="font-weight:700;padding:0 6px">{{ 'Assigned classes (for teachers)'|translate(language) }}</legend>
+          <p class="muted" style="margin:0 0 8px;font-size:.82rem">{{ 'Primary school teacher: choose one class. Middle-school subject teacher: choose several (e.g. Grade 5, 6, 7, 8). Teachers only see their own classes.'|translate(language) }}</p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px 16px">
+            {% for c in class_rows %}<label style="display:inline-flex;gap:6px;align-items:center;font-weight:600"><input type="checkbox" name="class_ids" value="{{ c.id }}"> {{ c.name }}</label>
+            {% else %}<span class="muted">{{ 'Create a class before registering a student.'|translate(language) }}</span>{% endfor %}
+          </div>
+        </fieldset>
         <label for="password">{{ 'Initial password'|translate(language) }}</label><input id="password" name="password" type="password" minlength="12" autocomplete="new-password" required>
         <small>Use at least 12 characters. Share credentials through a secure channel.</small>
         <button type="submit">{{ 'Create user account'|translate(language) }}</button>
@@ -36,7 +44,7 @@
                 </form>
               {% else %}{{ role_labels[account.role] }}{% endif %}
             </td>
-            <td>{{ account.teacher_name or account.student_name or '—' }}</td>
+            <td>{{ account.teacher_name or account.student_name or '—' }}{% if account.role == 'teacher' and account.teacher_id %}<br><small class="muted">{{ (teacher_classes.get(account.teacher_id) or [])|join(', ') or ('No classes assigned'|translate(language)) }}</small>{% endif %}</td>
             <td>{{ ('Active' if account.is_active else 'Inactive')|translate(language) }}</td>
             <td>{% if account.id != session.get('user_id') %}<div class="user-actions"><form method="post" action="{{ url_for('views.user_status', user_id=account.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small secondary-button" type="submit">{{ ('Deactivate' if account.is_active else 'Activate')|translate(language) }}</button></form><form method="post" action="{{ url_for('views.delete_user', user_id=account.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button></form></div>{% else %}<span class="muted">{{ 'Current account'|translate(language) }}</span>{% endif %}</td>
           </tr>{% endfor %}</tbody>

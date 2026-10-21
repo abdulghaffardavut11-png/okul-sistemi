@@ -1315,6 +1315,339 @@ class SchoolSystemTestCase(unittest.TestCase):
         self.sign_in_as("class-mgr", "a-secure-test-password")
         self.assertEqual(self.client.post("/admin/classes", data={"action": "update", "course_id": lower}).status_code, 403)
 
+    def test_teacher_multi_class_access_assignment_limits_and_scoping(self):
+        import io as _io
+        from openpyxl import load_workbook
+        self.sign_in()
+        with self.app.app_context():
+            db = get_db()
+            def teacher(name):
+                return db.execute("INSERT INTO teachers (name,email,subject) VALUES (?,?,'S')",
+                                  (name, name.lower().replace(" ", "") + "@x.test")).lastrowid
+            main_t, math_t, prim_t = teacher("Main Teacher"), teacher("Math Teacher"), teacher("Primary Teacher")
+            classes = {n: db.execute("INSERT INTO courses (name,code,teacher_id) VALUES (?,?,?)", (n, n[-1] + n[:1], main_t)).lastrowid
+                       for n in ("Grade 5", "Grade 6", "Grade 7", "Grade 8")}
+            kids = {}
+            for n, cid in classes.items():
+                sid = db.execute("INSERT INTO students (name,email,grade_level) VALUES (?,?,?)",
+                                 ("Kid " + n, "kid" + n[-1] + "@x.test", n)).lastrowid
+                eid = db.execute("INSERT INTO enrollments (student_id,course_id,academic_year) VALUES (?,?,2026)", (sid, cid)).lastrowid
+                db.execute("INSERT INTO grades (enrollment_id,score,graded_on,exam_name) VALUES (?,60,'2026-10-01','Quiz')", (eid,))
+                kids[n] = (sid, eid)
+            db.commit()
+            ids = {n: classes[n] for n in classes}
+        # accounts: a teacher with login (Math Teacher) and one for the primary teacher
+        self.add_user("math-user", "teacher", teacher_id=math_t)
+        self.add_user("prim-user", "teacher", teacher_id=prim_t)
+
+        def assign(teacher_id, level, *names):
+            return self.client.post("/admin/teacher-classes", data={
+                "teacher_id": teacher_id, "teaching_level": level, "class_ids": [ids[n] for n in names]},
+                follow_redirects=True)
+
+        # subject teacher gets several classes (Grade 5, 6, 7), but not Grade 8
+        page = self.client.get("/admin/teacher-classes")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Math Teacher", page.data)
+        self.assertIn(b"Teacher classes saved.", assign(math_t, "subject", "Grade 5", "Grade 6", "Grade 7").data)
+        with self.app.app_context():
+            got = {r[0] for r in get_db().execute(
+                "SELECT c.name FROM course_teachers ct JOIN courses c ON c.id=ct.course_id WHERE ct.teacher_id=?", (math_t,))}
+        self.assertEqual(got, {"Grade 5", "Grade 6", "Grade 7"})
+        # the main teacher cannot be removed from the class they lead (checkbox is locked)
+        assign(main_t, "subject")                                # submit with nothing ticked
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM course_teachers WHERE teacher_id=?", (main_t,)).fetchone()[0], 4)
+
+        # class teachers (primary school) are limited to one class
+        refused = assign(prim_t, "class", "Grade 5", "Grade 6")
+        self.assertIn(b"can have only one class", refused.data)
+        self.assertIn(b"Teacher classes saved.", assign(prim_t, "class", "Grade 6").data)
+        edit = self.client.post("/admin/classes", data={
+            "action": "update", "course_id": ids["Grade 7"], "name": "Grade 7", "code": "7G",
+            "teacher_id": main_t, "extra_teacher_ids": [prim_t]}, follow_redirects=True)
+        self.assertIn(b"can have only one class", edit.data)
+
+        # a class can have several teachers (math + class teacher)
+        self.client.post("/admin/classes", data={"action": "update", "course_id": ids["Grade 8"], "name": "Grade 8",
+                                                 "code": "8G", "teacher_id": main_t, "extra_teacher_ids": [math_t]})
+        classes_page = self.client.get("/admin/classes").data.decode()
+        self.assertIn("Math Teacher", classes_page)
+        self.client.post("/logout")
+
+        # the math teacher now sees Grade 5-8 and nothing else; all the scoped pages agree
+        self.sign_in_as("math-user", "a-secure-test-password")
+        names = lambda path, key="title": [r[key] for r in self.client.get(path).get_json()["students"]]
+        listing = self.client.get("/manage/students").data.decode()
+        for n in ("Grade 5", "Grade 6", "Grade 7", "Grade 8"):
+            self.assertIn("Kid " + n, listing)
+        att = self.client.get("/attendance").data.decode()
+        for n in ("Grade 5", "Grade 6", "Grade 7", "Grade 8"):
+            self.assertIn(f'>{n}', att.replace("  ", " "))
+        self.assertEqual(self.client.get(f"/attendance?course_id={ids['Grade 6']}&attendance_date=2026-10-20").status_code, 200)
+        self.assertEqual(len(self.client.get("/search?q=kid").get_json()["students"]), 4)
+        self.assertEqual(self.client.get(f"/export/student/{kids['Grade 7'][0]}").status_code, 200)
+        grades = load_workbook(_io.BytesIO(self.client.get("/export/gradebook").data)).active
+        self.assertEqual(sorted({r[0].value for r in grades.iter_rows(min_row=2)}), ["Grade 5", "Grade 6", "Grade 7", "Grade 8"])
+        self.client.post("/logout")
+
+        # the primary teacher sees Grade 6 only
+        self.sign_in_as("prim-user", "a-secure-test-password")
+        listing = self.client.get("/manage/students").data.decode()
+        self.assertIn("Kid Grade 6", listing)
+        for n in ("Grade 5", "Grade 7", "Grade 8"):
+            self.assertNotIn("Kid " + n, listing)
+        self.assertEqual(self.client.get(f"/attendance?course_id={ids['Grade 5']}&attendance_date=2026-10-20").status_code, 403)
+        self.assertEqual(self.client.get(f"/export/gradebook?course_id={ids['Grade 7']}").status_code, 403)
+        self.assertEqual(self.client.get(f"/export/student/{kids['Grade 8'][0]}").status_code, 403)
+        self.assertEqual(self.client.get("/admin/teacher-classes").status_code, 403)
+        self.assertNotIn("Teacher Class Assignments", self.client.get("/").data.decode())
+        self.client.post("/logout")
+
+        # a class teacher (one class only) cannot be made main teacher of a second class
+        self.sign_in()
+        blocked = self.client.post("/admin/classes", data={"action": "update", "course_id": ids["Grade 5"], "name": "Grade 5",
+                                                           "code": "5G", "teacher_id": prim_t}, follow_redirects=True)
+        self.assertIn(b"can have only one class", blocked.data)
+        # changing a class's main teacher removes the previous main teacher's access
+        self.client.post("/admin/classes", data={"action": "update", "course_id": ids["Grade 5"], "name": "Grade 5",
+                                                 "code": "5G", "teacher_id": math_t})
+        with self.app.app_context():
+            rows = {r[0] for r in get_db().execute("SELECT teacher_id FROM course_teachers WHERE course_id=?", (ids["Grade 5"],))}
+        self.assertEqual(rows, {math_t})
+        # merging classes keeps every teacher's access
+        self.client.post("/admin/classes", data={"action": "delete", "course_id": ids["Grade 8"], "move_to": ids["Grade 7"]})
+        with self.app.app_context():
+            rows = {r[0] for r in get_db().execute("SELECT teacher_id FROM course_teachers WHERE course_id=?", (ids["Grade 7"],))}
+        self.assertEqual(rows, {main_t, math_t})
+
+        # User Accounts: the class picker is always on the form, and a new teacher login gets its classes
+        users_page = self.client.get("/users").data.decode()
+        self.assertIn('name="class_ids"', users_page)
+        self.assertIn("Assigned classes", users_page)
+        with self.app.app_context():
+            new_t = get_db().execute("INSERT INTO teachers (name,email,subject) VALUES ('New Teacher','nt@x.test','S')").lastrowid
+            get_db().commit()
+        created = self.client.post("/users", data={
+            "username": "nt-login", "role": "teacher", "teacher_id": new_t, "password": "a-secure-test-password",
+            "class_ids": [ids["Grade 6"], ids["Grade 7"]]}, follow_redirects=True)
+        self.assertIn(b"User account created.", created.data)
+        self.assertIn("Grade 6, Grade 7", self.client.get("/users").data.decode())
+
+    def test_message_archive_trash_append_only_and_tamper_evidence(self):
+        import sqlite3 as _sqlite3
+        from school_system import audit
+        teacher_id, *_ = self._create_academic_test_records()
+        self.add_user("arch-teacher", "teacher", teacher_id=teacher_id)
+        self.add_user("arch-manager", "manager")
+        db_rows = lambda sql, *a: self._rows(sql, *a)
+
+        # --- a teacher publishes, edits and deletes a bulletin
+        self.sign_in_as("arch-teacher", "a-secure-test-password")
+        self.client.post("/portal/bulletin", data={"title": "Exam week", "description": "Exams start Monday 08:00."})
+        with self.app.app_context():
+            bid = get_db().execute("SELECT id FROM announcements WHERE title='Exam week'").fetchone()[0]
+        self.client.post(f"/portal/bulletin?edit={bid}", data={"record_id": bid, "title": "Exam week", "description": "Exams start TUESDAY 08:00."})
+        self.client.post(f"/calendar/bulletin/{bid}/delete")
+        self.assertNotIn(b"Exam week", self.client.get("/portal/bulletin").data)     # gone from the live list
+        with self.app.app_context():
+            self.assertIsNone(get_db().execute("SELECT 1 FROM announcements WHERE id=?", (bid,)).fetchone())
+        self.assertEqual(self.client.get("/admin/message-archive").status_code, 403)
+        self.assertEqual(self.client.get("/admin/trash").status_code, 403)
+        self.client.post("/logout")
+
+        # --- a manager drafts and deletes a bulk SMS
+        self.sign_in_as("arch-manager", "a-secure-test-password")
+        self.client.post("/portal/bulk-sms", data={"title": "Grade 5 parents", "description": "School closes early on Friday."})
+        with self.app.app_context():
+            sid = get_db().execute("SELECT id FROM service_requests WHERE module='bulk-sms'").fetchone()[0]
+        self.client.post(f"/requests/{sid}/delete", data={"module": "bulk-sms"})
+        self.client.post("/logout")
+
+        # --- the Super Admin posts a dashboard announcement, edits it, deletes it
+        self.sign_in()
+        act = lambda **d: self.client.post("/settings/interface", data=d, follow_redirects=True)
+        act(action="save_block", kind="announcement", tone="info", title="Fees reminder", body="Fees due 1 Nov.", audience=["parent"])
+        with self.app.app_context():
+            blk = get_db().execute("SELECT id FROM dashboard_blocks WHERE title='Fees reminder'").fetchone()[0]
+        act(action="save_block", item_id=blk, kind="announcement", tone="info", title="Fees reminder", body="Fees due 8 Nov.", audience=["parent"])
+        act(action="block_delete", item_id=blk)
+
+        with self.app.app_context():
+            archive = get_db().execute("SELECT * FROM message_archive ORDER BY id").fetchall()
+        summary = [(r["kind"], r["event"], r["sender_name"], r["sender_role"]) for r in archive]
+        self.assertEqual(summary, [
+            ("announcement", "created", "arch-teacher", "teacher"),
+            ("announcement", "edited", "arch-teacher", "teacher"),
+            ("announcement", "deleted", "arch-teacher", "teacher"),
+            ("sms_draft", "created", "arch-manager", "manager"),
+            ("sms_draft", "deleted", "arch-manager", "manager"),
+            ("dashboard_block", "created", "admin", "super_admin"),
+            ("dashboard_block", "edited", "admin", "super_admin"),
+            ("dashboard_block", "deleted", "admin", "super_admin"),
+        ])
+        self.assertIn("Monday", archive[0]["body"])                 # both versions of the text are kept
+        self.assertIn("TUESDAY", archive[1]["body"])
+        self.assertEqual(archive[3]["audience"], "Grade 5 parents")
+        self.assertEqual(archive[5]["audience"], "Parent")
+        self.assertRegex(archive[0]["occurred_at"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+
+        # --- the trash shows what / who / when
+        trash = self.client.get("/admin/trash").data.decode()
+        for needle in ("Exam week", "arch-teacher", "Grade 5 parents", "arch-manager", "Fees reminder", "admin", "UTC"):
+            self.assertIn(needle, trash)
+        self.assertIn("3 deleted items", trash.replace("3 silinen öğe", "3 deleted items"))
+        archive_page = self.client.get("/admin/message-archive").data.decode()
+        self.assertIn("arch-teacher", archive_page)
+        self.assertIn("TUESDAY", archive_page)
+        count = lambda qs: self.client.get("/admin/message-archive?" + qs).data.decode().count('class="ma-row"')
+        self.assertEqual(count("q=monday&kind=announcement"), 1)        # only the original wording
+        self.assertEqual(count("q=tuesday&kind=announcement"), 2)       # the edit + the deletion snapshot
+        self.assertEqual(count("kind=sms_draft"), 2)
+        self.assertEqual(count("event=deleted"), 3)
+        self.assertEqual(count("date_from=2999-01-01"), 0)
+        for path in ("/export/message-archive", "/export/message-archive?format=csv", "/export/trash"):
+            self.assertEqual(self.client.get(path).status_code, 200)
+
+        # --- append-only: even raw SQL cannot edit or delete an archive row
+        with self.app.app_context():
+            db = get_db()
+            with self.assertRaises(_sqlite3.DatabaseError):
+                db.execute("UPDATE message_archive SET body='forged' WHERE id=1")
+            with self.assertRaises(_sqlite3.DatabaseError):
+                db.execute("DELETE FROM message_archive WHERE id=1")
+            ok, count, bad, head = audit.verify_chain(db)
+            self.assertTrue(ok)
+            self.assertEqual(count, 8)
+        self.assertIn("Integrity verified", self.client.get("/admin/message-archive?verify=1").data.decode().replace("Bütünlük doğrulandı", "Integrity verified"))
+
+        # --- restoring from the trash brings the bulletin back (fresh period) and is logged
+        with self.app.app_context():
+            item = get_db().execute("SELECT id FROM deleted_items WHERE title='Exam week'").fetchone()[0]
+        self.client.post("/admin/trash", data={"action": "restore", "item_id": item})
+        self.assertIn(b"Exam week", self.client.get("/portal/bulletin").data)
+        with self.app.app_context():
+            last = get_db().execute("SELECT event FROM message_archive ORDER BY id DESC LIMIT 1").fetchone()[0]
+            self.assertEqual(last, "restored")
+
+        # --- emptying needs confirmation, is manual, leaves the archive intact and is itself recorded
+        self.client.post("/admin/trash", data={"action": "empty", "confirm": "nope"})
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM deleted_items").fetchone()[0], 2)
+        before = len(db_rows("SELECT id FROM message_archive"))
+        self.client.post("/admin/trash", data={"action": "empty", "confirm": "empty"}, follow_redirects=True)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM deleted_items").fetchone()[0], 0)
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM message_archive").fetchone()[0], before + 1)
+            self.assertEqual(get_db().execute("SELECT event FROM message_archive ORDER BY id DESC LIMIT 1").fetchone()[0], "trash_emptied")
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM message_archive WHERE body LIKE '%Fees due 8 Nov%'").fetchone()[0], 2)
+
+        # --- tamper evidence: someone edits the database file behind the app's back
+        with self.app.app_context():
+            db = get_db()
+            db.execute("DROP TRIGGER message_archive_no_update")
+            db.execute("UPDATE message_archive SET body='Exams start FRIDAY' WHERE id=2")
+            db.commit()
+            ok, count, bad, head = audit.verify_chain(db)
+        self.assertFalse(ok)
+        self.assertEqual(bad, 2)
+        self.assertIn("#2", self.client.get("/admin/message-archive?verify=1").data.decode())
+
+    def _rows(self, sql, *args):
+        with self.app.app_context():
+            return get_db().execute(sql, args).fetchall()
+
+    def test_date_and_place_of_birth_are_saved_validated_shown_and_exported(self):
+        import io as _io
+        from datetime import date as _date, timedelta as _td
+        from openpyxl import load_workbook
+        self.sign_in()
+        register = lambda **extra: self.client.post("/student-registration", data={
+            "name": "Birth Test", "email": "birth@x.test", "class_name": "Grade 4", **extra}, follow_redirects=True)
+
+        # invalid values are refused and nothing is stored
+        for bad, message in (({"date_of_birth": "31.02.2012"}, b"valid date"),
+                             ({"date_of_birth": (_date.today() + _td(days=3)).isoformat()}, b"cannot be in the future"),
+                             ({"date_of_birth": "1899-05-01"}, b"1950 or later"),
+                             ({"place_of_birth": "x" * 121}, b"120 characters")):
+            self.assertIn(message, register(**bad).data)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM students").fetchone()[0], 0)
+
+        # the form shows both inputs; a valid registration stores them
+        page = self.client.get("/student-registration?tab=student").data.decode()
+        self.assertIn('name="date_of_birth" type="date"', page)
+        self.assertIn('name="place_of_birth"', page)
+        ok = register(date_of_birth="2012-03-09", place_of_birth="Kumasi")
+        self.assertIn(b"Student registered", ok.data)
+        with self.app.app_context():
+            row = get_db().execute("SELECT id,date_of_birth,place_of_birth FROM students").fetchone()
+            sid = row["id"]
+        self.assertEqual((row["date_of_birth"], row["place_of_birth"]), ("2012-03-09", "Kumasi"))
+        # registration without them still works (both optional)
+        self.client.post("/student-registration", data={"name": "No Birth", "email": "nb@x.test", "class_name": "Grade 4"})
+
+        # profile panel: data for the row and the labelled rows in the panel
+        page = self.client.get("/student-registration?tab=student").data.decode()
+        self.assertIn('data-birth="09.03.2012"', page)
+        self.assertIn('data-birthplace="Kumasi"', page)
+        self.assertIn('id="profile-birth"', page)
+        self.assertIn('id="profile-birthplace"', page)
+
+        # the generic Student Information edit form shows and updates them
+        edit = self.client.get(f"/manage/students?edit={sid}").data.decode()
+        self.assertIn('name="date_of_birth"', edit)
+        self.assertIn('name="place_of_birth"', edit)
+        self.assertIn('value="2012-03-09"', edit)
+        data = {"name": "Birth Test", "email": "birth@x.test", "grade_level": "Grade 4",
+                "date_of_birth": "2011-12-31", "place_of_birth": "Tamale"}
+        done = self.client.post(f"/manage/students?edit={sid}", data={**data, "record_id": sid}, follow_redirects=True)
+        with self.app.app_context():
+            row = get_db().execute("SELECT date_of_birth,place_of_birth FROM students WHERE id=?", (sid,)).fetchone()
+        self.assertEqual((row["date_of_birth"], row["place_of_birth"]), ("2011-12-31", "Tamale"))
+        bad = self.client.post(f"/manage/students?edit={sid}", data={**data, "record_id": sid, "date_of_birth": "2999-01-01"}, follow_redirects=True)
+        self.assertIn(b"cannot be in the future", bad.data)
+        listing = self.client.get("/manage/students").data.decode()
+        self.assertIn("Tamale", listing)
+
+        # exports carry both fields
+        sheet = load_workbook(_io.BytesIO(self.client.get("/export/data/students").data)).active
+        header = [c.value for c in sheet[1]]
+        self.assertIn("Date of birth", header)
+        self.assertIn("Place of birth", header)
+        flat = [c.value for r in sheet.iter_rows(min_row=2) for c in r]
+        self.assertIn("2011-12-31", flat)
+        full = load_workbook(_io.BytesIO(self.client.get(f"/export/student/{sid}").data))
+        info = {r[0]: r[1] for r in full["Student Information"].iter_rows(min_row=2, values_only=True)}
+        self.assertEqual(info["Date of birth"], "2011-12-31")
+        self.assertEqual(info["Place of birth"], "Tamale")
+        self.assertIn("Tamale", self.client.get("/export/students?format=csv").data.decode())
+
+        # the student's own profile card shows them (dd.mm.yyyy)
+        self.client.post("/logout")
+        self.add_user("birth-student", "student", student_id=sid)
+        self.sign_in_as("birth-student", "a-secure-test-password")
+        mine = self.client.get("/").data.decode()
+        self.assertIn("31.12.2011", mine)
+        self.assertIn("Tamale", mine)
+
+    def test_old_database_gets_birth_columns_without_losing_data(self):
+        import sqlite3 as _sqlite3, tempfile, shutil
+        original = os.path.join(os.path.dirname(__file__), "..", "instance", "school.sqlite3")
+        if not os.path.exists(original):
+            self.skipTest("bundled development database not present")
+        with tempfile.TemporaryDirectory() as folder:
+            copy = os.path.join(folder, "old.sqlite3")
+            shutil.copy(original, copy)
+            before = _sqlite3.connect(copy).execute("SELECT COUNT(*) FROM students").fetchone()[0]
+            app = create_app({"DATABASE": copy, "UPLOAD_FOLDER": os.path.join(folder, "up"), "SECRET_KEY": "k"})
+            with app.app_context():
+                db = get_db()
+                cols = {r["name"] for r in db.execute("PRAGMA table_info(students)")}
+                self.assertTrue({"date_of_birth", "place_of_birth"} <= cols)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM students").fetchone()[0], before)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM students WHERE date_of_birth<>''").fetchone()[0], 0)
+
     def test_version_stamp_shows_which_build_is_live(self):
         health = self.client.get("/healthz").get_json()
         self.assertEqual(health["status"], "ok")

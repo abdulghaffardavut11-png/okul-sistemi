@@ -8,7 +8,7 @@ from flask import Flask, session, url_for
 from .db import get_db, init_db
 
 
-APP_VERSION = "2.1-2026-10-20"
+APP_VERSION = "2.3-2026-10-20"
 
 
 def create_app(test_config=None):
@@ -144,7 +144,7 @@ def create_app(test_config=None):
             visible = []
             if endpoint == "views.users" and role != "super_admin":
                 continue
-            if endpoint == "views.manage_classes" and role != "super_admin":
+            if endpoint in {"views.manage_classes", "views.teacher_classes", "views.message_archive", "views.trash"} and role != "super_admin":
                 continue
             if endpoint == "views.student_registration" and role not in {
                 "super_admin", "manager", "admin"

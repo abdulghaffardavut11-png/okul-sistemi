@@ -162,6 +162,59 @@ CREATE TABLE IF NOT EXISTS boarding_assignments (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (student_id, academic_year)
 );
+
+CREATE TABLE IF NOT EXISTS course_teachers (
+    course_id INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+    teacher_id INTEGER NOT NULL REFERENCES teachers(id) ON DELETE CASCADE,
+    PRIMARY KEY (course_id, teacher_id)
+);
+CREATE TRIGGER IF NOT EXISTS courses_main_teacher_insert AFTER INSERT ON courses
+BEGIN
+    INSERT OR IGNORE INTO course_teachers (course_id, teacher_id) VALUES (NEW.id, NEW.teacher_id);
+END;
+CREATE TRIGGER IF NOT EXISTS courses_main_teacher_update AFTER UPDATE OF teacher_id ON courses
+WHEN OLD.teacher_id <> NEW.teacher_id
+BEGIN
+    DELETE FROM course_teachers WHERE course_id = NEW.id AND teacher_id = OLD.teacher_id;
+    INSERT OR IGNORE INTO course_teachers (course_id, teacher_id) VALUES (NEW.id, NEW.teacher_id);
+END;
+
+CREATE TABLE IF NOT EXISTS message_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    source_id INTEGER,
+    event TEXT NOT NULL CHECK (event IN ('created', 'edited', 'deleted', 'restored', 'trash_emptied')),
+    title TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    audience TEXT NOT NULL DEFAULT '',
+    sender_id INTEGER,
+    sender_name TEXT NOT NULL DEFAULT '',
+    sender_role TEXT NOT NULL DEFAULT '',
+    occurred_at TEXT NOT NULL,
+    snapshot TEXT NOT NULL DEFAULT '',
+    prev_hash TEXT NOT NULL,
+    row_hash TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS message_archive_no_update BEFORE UPDATE ON message_archive
+BEGIN SELECT RAISE(ABORT, 'the message archive is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS message_archive_no_delete BEFORE DELETE ON message_archive
+BEGIN SELECT RAISE(ABORT, 'the message archive is append-only'); END;
+CREATE TABLE IF NOT EXISTS deleted_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    source_table TEXT NOT NULL,
+    source_id INTEGER,
+    title TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    audience TEXT NOT NULL DEFAULT '',
+    snapshot TEXT NOT NULL,
+    deleted_by_id INTEGER,
+    deleted_by_name TEXT NOT NULL DEFAULT '',
+    deleted_by_role TEXT NOT NULL DEFAULT '',
+    deleted_at TEXT NOT NULL,
+    created_by_name TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT ''
+);
 """
 
 USER_SCHEMA = """
@@ -320,6 +373,8 @@ def init_db():
         {
             "national_id": "TEXT NOT NULL DEFAULT ''",
             "gender": "TEXT NOT NULL DEFAULT ''",
+            "date_of_birth": "TEXT NOT NULL DEFAULT ''",
+            "place_of_birth": "TEXT NOT NULL DEFAULT ''",
             "father_name": "TEXT NOT NULL DEFAULT ''",
             "father_phone": "TEXT NOT NULL DEFAULT ''",
             "father_occupation": "TEXT NOT NULL DEFAULT ''",
@@ -350,6 +405,9 @@ def init_db():
         "staff_updates",
         {"scheduled_at": "TEXT"},
     )
+    _add_columns(db, "announcements", {"created_by": "INTEGER"})
+    # "class": a class teacher with ONE class (primary school) · "subject": several classes (middle school)
+    _add_columns(db, "teachers", {"teaching_level": "TEXT NOT NULL DEFAULT 'subject'"})
     _add_columns(
         db,
         "announcements",
@@ -412,10 +470,33 @@ def init_db():
     ):
         db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
     _repair_class_names(db)
+    _ensure_nav_item(db, "views.message_archive", "Message Archive", "reports", after="views.manage_classes")
+    _ensure_nav_item(db, "views.trash", "Deleted Items / Audit Log", "updates", after="views.manage_classes")
+    _ensure_nav_item(db, "views.teacher_classes", "Teacher Class Assignments", "teachers", after="views.manage_classes")
+    # every class's main teacher is always one of its teachers (extra teachers are added on top)
+    db.execute(
+        "INSERT OR IGNORE INTO course_teachers (course_id, teacher_id) SELECT id, teacher_id FROM courses"
+    )
     # "Export Students (CSV)" left the side menu: every list now has its own Export button.
     db.execute("DELETE FROM navigation_items WHERE url_endpoint='views.export_students'")
     db.commit()
     current_app.teardown_appcontext(close_db)
+
+
+def _ensure_nav_item(db, endpoint, title, icon, after):
+    """Add a menu item to databases created before the page existed (next to an existing item)."""
+    if db.execute("SELECT 1 FROM navigation_items WHERE url_endpoint=?", (endpoint,)).fetchone():
+        return
+    anchor = db.execute(
+        "SELECT category,display_order FROM navigation_items WHERE url_endpoint=?", (after,)
+    ).fetchone()
+    if anchor is None:
+        return
+    db.execute(
+        "INSERT INTO navigation_items (category,title,icon,url_endpoint,route_arg,is_active,display_order) "
+        "VALUES (?,?,?,?,'',1,?)",
+        (anchor["category"], title, icon, endpoint, anchor["display_order"] + 1),
+    )
 
 
 def _repair_class_names(db):

@@ -129,3 +129,27 @@ when Node is installed).
 students or records is deleted with *Move students and delete*: enrollments, grades, attendance, homework and timetable
 move to the class you choose (a student already in the target keeps one enrollment, records are merged) and the students'
 class text follows. Classes whose names differ only by case/spacing (`GRADE 5` / `Grade 5`) are flagged "Duplicate name".
+
+## Teachers with several classes
+
+`course_teachers` links classes and teachers (many-to-many); the class's main teacher (★) is always included.
+Super Admin → *Teacher Class Assignments* picks each teacher's classes (a "class teacher" = one class for primary school,
+a "subject teacher" = several for middle school); *Class Management → Edit* also lists the other teachers of a class,
+and *User Accounts* shows the class picker when a teacher login is created. Every teacher page (student list, attendance,
+grades, search, exports) uses this one rule; administrators still see every class.
+
+## Message archive and deleted items
+
+* `message_archive` – permanent and append-only (SQLite triggers refuse UPDATE/DELETE). Each entry stores sender, role,
+  audience, UTC time and the full text of every bulletin announcement, dashboard announcement/block and bulk-SMS draft
+  (created / edited / deleted / restored). Entries are hash-chained; *Verify integrity* recomputes the chain and prints
+  the latest seal. Super Admin only: `/admin/message-archive` (searchable, exportable).
+* `deleted_items` – what / who / when for everything teachers or admins delete. Nothing is auto-removed; only the Super Admin
+  can restore or *Empty deleted items* (typed confirmation). Emptying is itself logged in the permanent archive, which keeps
+  its copies. `/admin/trash`.
+
+## Date and place of birth
+
+Students now have `date_of_birth` (YYYY-MM-DD, 1950 – today) and `place_of_birth` (max 120 characters), both optional.
+They are on the registration form and the Student Information edit form, in the profile panel of the student list, on
+the student's own profile card, and in every export. Existing databases get the two columns automatically.

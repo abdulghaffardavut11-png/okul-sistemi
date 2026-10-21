@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_export_menu.html" import export_menu with context %}
+{% block title %}{{ 'Message Archive'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <style>
+    .ma-filters{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:10px 0 14px}
+    .ma-filters label{display:grid;gap:3px;font-size:.78rem;font-weight:700}
+    .ma-filters input,.ma-filters select{min-height:38px;padding:6px 10px;border:1px solid #dce2ea;border-radius:8px;font:inherit}
+    .ma-row{padding:12px 0;border-top:1px solid var(--line,#e4e7ec)}
+    .ma-meta{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:.8rem;color:var(--muted,#667085)}
+    .ma-ev{padding:2px 9px;border-radius:999px;font-weight:800;font-size:.68rem;background:#eaf2ff;color:#1758a6}
+    .ma-ev.deleted,.ma-ev.trash_emptied{background:#fff0ef;color:#b42318}.ma-ev.restored{background:#eaf7ee;color:#16803c}.ma-ev.edited{background:#fff8df;color:#946200}
+    .ma-body{white-space:pre-line;margin:6px 0 0;overflow-wrap:anywhere}
+    .ma-verify{padding:10px 14px;border-radius:12px;margin:10px 0;font-weight:700}
+    .ma-verify.ok{background:#eaf7ee;color:#16803c}.ma-verify.bad{background:#fff0ef;color:#b42318}
+    .ma-hash{font:12px/1.4 ui-monospace,monospace;word-break:break-all;color:var(--muted,#667085)}
+  </style>
+  <section class="page-title-row"><div><span class="eyebrow">{{ 'Super Admin'|translate(language) }}</span><h1>{{ 'Message Archive'|translate(language) }}</h1>
+    <p class="muted">{{ 'Permanent record of every announcement and message: who sent it, to whom, exactly when, and the full text. Entries can never be edited or deleted — corrections and deletions appear as new entries.'|translate(language) }}</p></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">{{ export_menu(url_for('views.export_message_archive', **args)) }}
+      <a class="button-small secondary-button" href="{{ url_for('views.trash') }}">🗑 {{ 'Deleted Items / Audit Log'|translate(language) }}</a></div></section>
+  <section class="portal-card">
+    <form method="get" class="ma-filters">
+      <label>{{ 'Search text'|translate(language) }}<input type="search" name="q" value="{{ args.q }}"></label>
+      <label>{{ 'Type'|translate(language) }}<select name="kind"><option value="">{{ 'All'|translate(language) }}</option>{% for k, label in kinds.items() %}<option value="{{ k }}" {{ 'selected' if args.kind == k }}>{{ label|translate(language) }}</option>{% endfor %}</select></label>
+      <label>{{ 'Event'|translate(language) }}<select name="event"><option value="">{{ 'All'|translate(language) }}</option>{% for k, label in events.items() %}<option value="{{ k }}" {{ 'selected' if args.event == k }}>{{ label|translate(language) }}</option>{% endfor %}</select></label>
+      <label>{{ 'From'|translate(language) }}<input type="date" name="date_from" value="{{ args.date_from }}"></label>
+      <label>{{ 'To'|translate(language) }}<input type="date" name="date_to" value="{{ args.date_to }}"></label>
+      <button class="button-small" type="submit">{{ 'Search'|translate(language) }}</button>
+      <a class="button-small secondary-button" href="{{ url_for('views.message_archive', verify=1) }}">🔒 {{ 'Verify integrity'|translate(language) }}</a>
+    </form>
+    {% if verified is not none %}
+      {% if verified %}<div class="ma-verify ok">✓ {{ 'Integrity verified'|translate(language) }}: {{ verified_count }} {{ 'entries are intact.'|translate(language) }}<div class="ma-hash">{{ 'Latest seal'|translate(language) }}: {{ head }}</div><small>{{ 'Note this seal somewhere outside the system (print or email it) to prove later that nothing before it changed.'|translate(language) }}</small></div>
+      {% else %}<div class="ma-verify bad">✗ {{ 'The archive was altered: the chain breaks at entry'|translate(language) }} #{{ bad_id }}.</div>{% endif %}
+    {% endif %}
+    <p class="muted">{{ total }} {{ 'entries'|translate(language) }}</p>
+    {% for r in rows %}
+      <article class="ma-row">
+        <div class="ma-meta"><span class="ma-ev {{ r.event }}">{{ events.get(r.event, r.event)|translate(language) }}</span>
+          <span>#{{ r.id }}</span><span>{{ r.occurred_at }} UTC</span><span>{{ kinds.get(r.kind, r.kind)|translate(language) }}</span>
+          <span>{{ 'Sender'|translate(language) }}: <strong>{{ r.sender_name }}</strong> ({{ r.sender_role.replace('_', ' ') }})</span>
+          <span>{{ 'Audience'|translate(language) }}: {{ r.audience }}</span></div>
+        <strong>{{ r.title }}</strong>
+        {% if r.body %}<p class="ma-body">{{ r.body }}</p>{% endif %}
+      </article>
+    {% else %}<p class="muted">{{ 'Nothing to show.'|translate(language) }}</p>{% endfor %}
+    {% if pages > 1 %}<div style="display:flex;gap:8px;justify-content:center;margin-top:14px">
+      {% if page > 1 %}<a class="button-small secondary-button" href="{{ url_for('views.message_archive', page=page - 1, **args) }}">←</a>{% endif %}
+      <span>{{ page }} / {{ pages }}</span>
+      {% if page < pages %}<a class="button-small secondary-button" href="{{ url_for('views.message_archive', page=page + 1, **args) }}">→</a>{% endif %}</div>{% endif %}
+  </section>
+{% endblock %}

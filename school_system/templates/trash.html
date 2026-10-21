@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% from "_export_menu.html" import export_menu with context %}
+{% block title %}{{ 'Deleted Items / Audit Log'|translate(language) }} · {{ school_name }}{% endblock %}
+{% block content %}
+  <style>
+    .tr-item{padding:12px 0;border-top:1px solid var(--line,#e4e7ec)}
+    .tr-meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:.82rem;color:var(--muted,#667085);margin:4px 0}
+    .tr-meta strong{color:var(--ink,#101828)}
+    .tr-body{white-space:pre-line;margin:6px 0;overflow-wrap:anywhere}
+    .tr-empty-box{border:1px solid #f3c4bf;background:#fff7f6;border-radius:12px;padding:12px 14px;margin-top:16px}
+  </style>
+  <section class="page-title-row"><div><span class="eyebrow">{{ 'Super Admin'|translate(language) }}</span><h1>{{ 'Deleted Items / Audit Log'|translate(language) }}</h1>
+    <p class="muted">{{ 'Messages and announcements deleted by teachers or administrators land here with what was deleted, who deleted it and when. Nothing is removed automatically.'|translate(language) }}</p></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">{{ export_menu(url_for('views.export_trash')) }}
+      <a class="button-small secondary-button" href="{{ url_for('views.message_archive') }}">{{ 'Message Archive'|translate(language) }}</a></div></section>
+  <section class="portal-card">
+    <p class="muted">{{ items|length }} {{ 'deleted items'|translate(language) }}</p>
+    {% for i in items %}
+      <article class="tr-item">
+        <strong>{{ i.title }}</strong> <span class="role-pill">{{ kinds.get(i.kind, i.kind)|translate(language) }}</span>
+        <div class="tr-meta">
+          <span>{{ 'Deleted by'|translate(language) }}: <strong>{{ i.deleted_by_name }}</strong> ({{ i.deleted_by_role.replace('_', ' ') }})</span>
+          <span>{{ 'Deleted at'|translate(language) }}: <strong>{{ i.deleted_at }} UTC</strong></span>
+          <span>{{ 'Audience'|translate(language) }}: {{ i.audience }}</span>
+          {% if i.created_by_name %}<span>{{ 'Written by'|translate(language) }}: {{ i.created_by_name }}</span>{% endif %}
+          {% if i.created_at %}<span>{{ 'Written at'|translate(language) }}: {{ i.created_at }}</span>{% endif %}
+        </div>
+        {% if i.body %}<details><summary>{{ 'Show text'|translate(language) }}</summary><p class="tr-body">{{ i.body }}</p></details>{% endif %}
+        <form method="post" style="margin-top:6px"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="restore"><input type="hidden" name="item_id" value="{{ i.id }}">
+          <button class="button-small secondary-button" type="submit">{{ 'Restore'|translate(language) }}</button></form>
+      </article>
+    {% else %}<div class="card-empty"><span>◌</span><p>{{ 'No deleted items.'|translate(language) }}</p></div>{% endfor %}
+    {% if items %}
+      <form method="post" class="tr-empty-box" onsubmit="return confirm('{{ 'Permanently remove all deleted items from this list?'|translate(language)|e }}');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="empty">
+        <strong>{{ 'Empty deleted items'|translate(language) }}</strong>
+        <p class="muted" style="margin:4px 0 8px">{{ 'Only you can do this, and only by hand. The permanent Message Archive keeps its copy of every message and records that you emptied this list.'|translate(language) }}</p>
+        <input name="confirm" autocomplete="off" placeholder="{{ 'Type EMPTY'|translate(language) }}" required style="min-height:38px;padding:6px 10px;border:1px solid #dce2ea;border-radius:8px">
+        <button class="button-small danger-button" type="submit">{{ 'Empty deleted items'|translate(language) }}</button>
+      </form>
+    {% endif %}
+  </section>
+{% endblock %}

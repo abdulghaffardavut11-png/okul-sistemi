@@ -30,6 +30,7 @@ from werkzeug.security import generate_password_hash
 
 from .auth import ROLES, roles_required
 from .db import get_db
+from . import audit
 from .exports import download, requested_format
 
 bp = Blueprint("views", __name__)
@@ -195,6 +196,8 @@ RESOURCES = {
             ("grade_level", "Class / grade", "text"),
             ("national_id", "TC / National ID", "text", False),
             ("gender", "Gender", "select", ["Female", "Male", "Other"], False),
+            ("date_of_birth", "Date of birth", "date", False),
+            ("place_of_birth", "Place of birth", "text", False),
             ("father_name", "Father's name", "text", False),
             ("father_phone", "Father's phone", "tel", False),
             ("father_occupation", "Father's occupation", "text", False),
@@ -205,8 +208,8 @@ RESOURCES = {
             ("dormitory_info", "Dormitory information", "text", False),
             ("profile_picture", "Profile picture", "file", False),
         ],
-        "columns": [("profile_picture", "Photo"), ("name", "Name"), ("email", "Email"), ("grade_level", "Class / grade"), ("national_id", "TC / National ID"), ("gender", "Gender"), ("father_name", "Father"), ("father_phone", "Father's phone"), ("father_occupation", "Father's occupation"), ("mother_name", "Mother"), ("mother_phone", "Mother's phone"), ("mother_occupation", "Mother's occupation"), ("home_address", "Home address"), ("dormitory_info", "Dormitory")],
-        "select": "SELECT id, name, email, grade_level, national_id, gender, father_name, father_phone, father_occupation, mother_name, mother_phone, mother_occupation, home_address, dormitory_info, profile_picture FROM students ORDER BY name",
+        "columns": [("profile_picture", "Photo"), ("name", "Name"), ("email", "Email"), ("grade_level", "Class / grade"), ("national_id", "TC / National ID"), ("gender", "Gender"), ("date_of_birth", "Date of birth"), ("place_of_birth", "Place of birth"), ("father_name", "Father"), ("father_phone", "Father's phone"), ("father_occupation", "Father's occupation"), ("mother_name", "Mother"), ("mother_phone", "Mother's phone"), ("mother_occupation", "Mother's occupation"), ("home_address", "Home address"), ("dormitory_info", "Dormitory")],
+        "select": "SELECT id, name, email, grade_level, national_id, gender, date_of_birth, place_of_birth, father_name, father_phone, father_occupation, mother_name, mother_phone, mother_occupation, home_address, dormitory_info, profile_picture FROM students ORDER BY name",
     },
     "teachers": {
         "title": "Teachers",
@@ -221,7 +224,7 @@ RESOURCES = {
             ("profile_picture", "Profile picture", "file", False),
         ],
         "columns": [("profile_picture", "Photo"), ("name", "Name"), ("email", "Email"), ("phone", "Phone"), ("home_address", "Home address"), ("subject", "Teaching subject"), ("assigned_classes", "Assigned classes")],
-        "select": "SELECT t.id, t.name, t.email, t.phone, t.home_address, t.subject, t.profile_picture, (SELECT group_concat(c.name, ', ') FROM courses c WHERE c.teacher_id=t.id) AS assigned_classes FROM teachers t WHERE t.email <> 'unassigned@school.invalid' ORDER BY t.name",
+        "select": "SELECT t.id, t.name, t.email, t.phone, t.home_address, t.subject, t.profile_picture, (SELECT group_concat(c.name, ', ') FROM courses c JOIN course_teachers ct ON ct.course_id=c.id WHERE ct.teacher_id=t.id) AS assigned_classes FROM teachers t WHERE t.email <> 'unassigned@school.invalid' ORDER BY t.name",
     },
     "courses": {
         "title": "Classes",
@@ -263,6 +266,9 @@ PORTAL_GROUPS = [
         ("Summer School", "summer-school", "views.summer_school"),
         ("Summer School Archive", "archive", "views.summer_school_archive"),
         ("Class Management", "classes", "views.manage_classes"),
+        ("Teacher Class Assignments", "teachers", "views.teacher_classes"),
+        ("Message Archive", "reports", "views.message_archive"),
+        ("Deleted Items / Audit Log", "updates", "views.trash"),
         ("Enrollments", "enrollments", "views.manage", "enrollments"),
     ]),
     ("Institutional Operations", [
@@ -1062,7 +1068,7 @@ def profile_image(filename):
             allowed = bool(
                 db.execute(
                     "SELECT 1 FROM enrollments e JOIN courses c ON c.id=e.course_id "
-                    "WHERE e.student_id=? AND c.teacher_id=? LIMIT 1",
+                    "WHERE e.student_id=? AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?) LIMIT 1",
                     (owner["id"], user["teacher_id"]),
                 ).fetchone()
             )
@@ -1094,9 +1100,9 @@ def _teacher_course_filter(user, query):
             return query.replace(
                 " ORDER BY",
                 " WHERE id IN (SELECT e.student_id FROM enrollments e "
-                "JOIN courses c ON c.id=e.course_id WHERE c.teacher_id=?) ORDER BY",
+                "JOIN courses c ON c.id=e.course_id WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)) ORDER BY",
             ), (user["teacher_id"],)
-        return query.replace(" ORDER BY", " WHERE c.teacher_id = ? ORDER BY"), (user["teacher_id"],)
+        return query.replace(" ORDER BY", " WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?) ORDER BY"), (user["teacher_id"],)
     return query, ()
 
 
@@ -1108,7 +1114,7 @@ def _course_scope(user):
     if user["role"] == "teacher":
         if not user["teacher_id"]:
             abort(403)
-        return " AND c.teacher_id=?", (user["teacher_id"],)
+        return " AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)", (user["teacher_id"],)
     if user["role"] in {"super_admin", "manager", "admin"}:
         return "", ()
     abort(403)
@@ -1120,7 +1126,7 @@ def _student_scope(user):
             abort(403)
         return (
             " AND e.student_id IN (SELECT e2.student_id FROM enrollments e2 "
-            "JOIN courses c2 ON c2.id=e2.course_id WHERE c2.teacher_id=?)",
+            "JOIN courses c2 ON c2.id=e2.course_id WHERE c2.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?))",
             (user["teacher_id"],),
         )
     if user["role"] in {"super_admin", "manager", "admin"}:
@@ -1197,6 +1203,7 @@ def dashboard():
             passed=sum(1 for grade in grades if grade["score"] >= 50),
             failed=sum(1 for grade in grades if grade["score"] < 50),
             hidden=_hidden_blocks(db),
+            birth_display=_show_date(student["date_of_birth"]),
             custom_blocks=_dashboard_custom_blocks(db, user["role"]),
         )
 
@@ -1204,7 +1211,7 @@ def dashboard():
     counts = {}
     if user["role"] == "teacher":
         teacher_courses = db.execute(
-            "SELECT c.id, c.name, c.code FROM courses c WHERE c.teacher_id = ? ORDER BY c.name",
+            "SELECT c.id, c.name, c.code FROM courses c WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?) ORDER BY c.name",
             (user["teacher_id"],),
         ).fetchall() if user["teacher_id"] else []
         course_ids = [course["id"] for course in teacher_courses]
@@ -1707,6 +1714,169 @@ def export_translations():
     )
 
 
+ARCHIVE_KINDS = {
+    "announcement": "Weekly bulletin announcement",
+    "dashboard_block": "Dashboard announcement / block",
+    "sms_draft": "Bulk SMS draft",
+    "system": "System",
+}
+ARCHIVE_EVENTS = {
+    "created": "Sent / published", "edited": "Edited", "deleted": "Deleted",
+    "restored": "Restored", "trash_emptied": "Trash emptied",
+}
+
+
+def _audience_label(audience):
+    if not audience or audience == "all":
+        return "Everyone"
+    return ", ".join(r.replace("_", " ").title() for r in audience.split(","))
+
+
+def _author_name(db, user_id):
+    row = db.execute("SELECT username FROM users WHERE id=?", (user_id,)).fetchone() if user_id else None
+    return row["username"] if row else ""
+
+
+def _trash_announcement(db, row, user):
+    audit.move_to_trash(
+        db, "announcement", "announcements", row, user, row["title"], row["body"],
+        "All staff (weekly bulletin)", _author_name(db, row["created_by"]), row["published_at"],
+    )
+    db.execute("DELETE FROM announcements WHERE id=?", (row["id"],))
+
+
+def _trash_dashboard_block(db, row, user):
+    audit.move_to_trash(
+        db, "dashboard_block", "dashboard_blocks", row, user, row["title"], row["body"],
+        _audience_label(row["audience"]), _author_name(db, row["created_by"]), row["created_at"],
+    )
+    db.execute("DELETE FROM dashboard_blocks WHERE id=?", (row["id"],))
+
+
+def _trash_sms_draft(db, row, user):
+    audit.move_to_trash(
+        db, "sms_draft", "service_requests", row, user, row["title"], row["details"],
+        row["title"], _author_name(db, row["created_by"]), row["created_at"],
+    )
+    db.execute("DELETE FROM service_requests WHERE id=?", (row["id"],))
+
+
+def _archive_rows(db):
+    """Filtered rows of the permanent archive (newest first) from the query string."""
+    where, params = ["1=1"], []
+    kind, event = request.args.get("kind", ""), request.args.get("event", "")
+    if kind in ARCHIVE_KINDS:
+        where.append("kind=?"); params.append(kind)
+    if event in ARCHIVE_EVENTS:
+        where.append("event=?"); params.append(event)
+    for field, op in (("date_from", ">="), ("date_to", "<=")):
+        value = request.args.get(field, "").strip()
+        if value and _valid_date(value):
+            where.append(f"substr(occurred_at,1,10){op}?"); params.append(value)
+    rows = db.execute(
+        "SELECT * FROM message_archive WHERE " + " AND ".join(where) + " ORDER BY id DESC", params
+    ).fetchall()
+    query = _fold(request.args.get("q", "")[:80])
+    if query:
+        rows = [r for r in rows if query in _fold(
+            f"{r['title']} {r['body']} {r['sender_name']} {r['audience']} {r['sender_role']}")]
+    return rows
+
+
+@bp.get("/admin/message-archive")
+@roles_required("super_admin")
+def message_archive():
+    """Permanent, append-only record of every message and announcement (sender, audience, time, text)."""
+    db = get_db()
+    rows = _archive_rows(db)
+    per_page = 40
+    pages = max(1, -(-len(rows) // per_page))
+    page = min(max(request.args.get("page", 1, type=int) or 1, 1), pages)
+    ok, entries, bad_id, head = audit.verify_chain(db) if request.args.get("verify") == "1" else (None, None, None, None)
+    return render_template(
+        "message_archive.html", rows=rows[(page - 1) * per_page: page * per_page], total=len(rows),
+        page=page, pages=pages, kinds=ARCHIVE_KINDS, events=ARCHIVE_EVENTS,
+        verified=ok, verified_count=entries, bad_id=bad_id, head=head,
+        args={k: request.args.get(k, "") for k in ("kind", "event", "q", "date_from", "date_to")},
+    )
+
+
+@bp.get("/export/message-archive")
+@roles_required("super_admin")
+def export_message_archive():
+    rows = _archive_rows(get_db())
+    headers = ["No", "Date and time (UTC)", "Event", "Type", "Sender", "Role", "Audience", "Title", "Text"]
+    out = [
+        (r["id"], r["occurred_at"], ARCHIVE_EVENTS.get(r["event"], r["event"]),
+         ARCHIVE_KINDS.get(r["kind"], r["kind"]), r["sender_name"], r["sender_role"],
+         r["audience"], r["title"], r["body"])
+        for r in rows
+    ]
+    return download("message_archive", [("Message archive", headers, out)])
+
+
+@bp.route("/admin/trash", methods=("GET", "POST"))
+@roles_required("super_admin")
+def trash():
+    """Deleted items / audit log. Nothing leaves here automatically; only the Super Admin empties it."""
+    db = get_db()
+    user = _current_user()
+    if request.method == "POST":
+        action = request.form.get("action", "")
+        if action == "empty":
+            if _fold(request.form.get("confirm", "")) not in {"empty", "bosalt"}:
+                flash("Type EMPTY to confirm emptying the deleted items.", "error")
+                return redirect(url_for("views.trash"))
+            items = db.execute("SELECT id,kind,title FROM deleted_items ORDER BY id").fetchall()
+            if items:
+                audit.log_message(
+                    db, "system", None, "trash_emptied", f"Deleted items emptied ({len(items)})",
+                    "; ".join(f"#{i['id']} {i['kind']}: {i['title']}" for i in items), "Super Admin", user,
+                    {"count": len(items)},
+                )
+                db.execute("DELETE FROM deleted_items")
+            db.commit()
+            flash("Deleted items were emptied. The permanent message archive is unchanged.", "success")
+        elif action == "restore":
+            item = db.execute("SELECT * FROM deleted_items WHERE id=?", (_optional_int(request.form.get("item_id")),)).fetchone()
+            if item is None:
+                abort(404)
+            try:
+                new_id = audit.restore_row(db, item)
+                if item["source_table"] == "announcements":
+                    now = audit.now_text()
+                    row = db.execute("SELECT period FROM announcements WHERE id=?", (new_id,)).fetchone()
+                    period = row["period"] if row and row["period"] in BULLETIN_PERIODS else "weekly"
+                    ends, _ = _bulletin_expiry(period, now, "")
+                    db.execute(
+                        "UPDATE announcements SET archived_at='',archive_reason='',published_at=?,"
+                        "expires_at=?,expiry_custom=0 WHERE id=?", (now, ends, new_id),
+                    )
+                audit.log_message(db, item["kind"], new_id, "restored", item["title"], item["body"],
+                                  item["audience"], user, {"restored_from_trash": item["id"]})
+                db.execute("DELETE FROM deleted_items WHERE id=?", (item["id"],))
+                db.commit()
+                flash("Item restored.", "success")
+            except (ValueError, sqlite3.Error):
+                db.rollback()
+                flash("This item could not be restored.", "error")
+        else:
+            abort(400)
+        return redirect(url_for("views.trash"))
+    items = db.execute("SELECT * FROM deleted_items ORDER BY deleted_at DESC,id DESC").fetchall()
+    return render_template("trash.html", items=items, kinds=ARCHIVE_KINDS)
+
+
+@bp.get("/export/trash")
+@roles_required("super_admin")
+def export_trash():
+    items = get_db().execute("SELECT * FROM deleted_items ORDER BY deleted_at DESC,id DESC").fetchall()
+    headers = ["No", "What", "Type", "Audience", "Deleted by", "Role", "Deleted at (UTC)", "Written by", "Written at", "Text"]
+    out = [(i["id"], i["title"], ARCHIVE_KINDS.get(i["kind"], i["kind"]), i["audience"], i["deleted_by_name"],
+            i["deleted_by_role"], i["deleted_at"], i["created_by_name"], i["created_at"], i["body"]) for i in items]
+    return download("deleted_items", [("Deleted items", headers, out)])
+
+
 @bp.route("/settings/interface", methods=("GET", "POST"))
 @roles_required("super_admin")
 def interface_settings():
@@ -1809,15 +1979,21 @@ def interface_settings():
                     "tone=?,audience=?,starts_on=?,ends_on=? WHERE id=?",
                     (*fields, item_id),
                 )
+                audit.log_message(db, "dashboard_block", item_id, "edited", title, body,
+                                  _audience_label(audience), user, {"kind": kind, "tone": tone,
+                                  "link_url": link_url, "starts_on": starts_on, "ends_on": ends_on})
             else:
                 order = db.execute(
                     "SELECT COALESCE(MAX(display_order),-1)+1 FROM dashboard_blocks"
                 ).fetchone()[0]
-                db.execute(
+                new_block = db.execute(
                     "INSERT INTO dashboard_blocks (kind,title,body,link_label,link_url,tone,"
                     "audience,starts_on,ends_on,display_order,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (*fields, order, user["id"]),
-                )
+                ).lastrowid
+                audit.log_message(db, "dashboard_block", new_block, "created", title, body,
+                                  _audience_label(audience), user, {"kind": kind, "tone": tone,
+                                  "link_url": link_url, "starts_on": starts_on, "ends_on": ends_on})
             flash("Dashboard block saved.", "success")
         elif action in {"block_up", "block_down", "block_toggle", "block_delete"}:
             block = db.execute(
@@ -1834,8 +2010,9 @@ def interface_settings():
                 )
                 flash("Dashboard block visibility updated.", "success")
             else:
-                db.execute("DELETE FROM dashboard_blocks WHERE id=?", (block["id"],))
-                flash("Dashboard block deleted.", "success")
+                _trash_dashboard_block(
+                    db, db.execute("SELECT * FROM dashboard_blocks WHERE id=?", (block["id"],)).fetchone(), user)
+                flash("Moved to Deleted Items. Only the Super Admin can restore or empty it.", "success")
         else:
             abort(400)
         db.commit()
@@ -2082,7 +2259,7 @@ def export_students():
     if not match or int(match.group(2)) != int(match.group(1)) + 1:
         abort(400)
     students = db.execute(
-        "SELECT s.id,s.name,s.grade_level,c.name AS class_name,s.gender,? AS academic_year,"
+        "SELECT s.id,s.name,s.grade_level,c.name AS class_name,s.gender,s.date_of_birth,s.place_of_birth,? AS academic_year,"
         "COALESCE(b.residency,'Day') AS status "
         "FROM enrollments e JOIN students s ON s.id=e.student_id "
         "JOIN courses c ON c.id=e.course_id "
@@ -2090,9 +2267,9 @@ def export_students():
         "WHERE e.academic_year=? ORDER BY c.name,s.name",
         (academic_year, int(match.group(1))),
     ).fetchall()
-    headers = ("ID", "Class", "Student Full Name", "Gender", "Academic Year", "Status")
+    headers = ("ID", "Class", "Student Full Name", "Gender", "Date of birth", "Place of birth", "Academic Year", "Status")
     rows = [
-        (st["id"], st["class_name"], st["name"], st["gender"], st["academic_year"], st["status"])
+        (st["id"], st["class_name"], st["name"], st["gender"], st["date_of_birth"], st["place_of_birth"], st["academic_year"], st["status"])
         for st in students
     ]
     return download(
@@ -2301,11 +2478,11 @@ def _own_student_id_or_scope(db, user, student_id):
             abort(403)
         if not db.execute(
             "SELECT 1 FROM enrollments e JOIN courses c ON c.id=e.course_id "
-            "WHERE e.student_id=? AND c.teacher_id=?",
+            "WHERE e.student_id=? AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)",
             (student_id, user["teacher_id"]),
         ).fetchone():
             abort(403)
-        return " AND c.teacher_id=?", (user["teacher_id"],)
+        return " AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)", (user["teacher_id"],)
     abort(403)
 
 
@@ -2326,6 +2503,7 @@ def export_student_full(student_id):
     info_fields = [
         ("name", "Student"), ("grade_level", "Class / grade"), ("email", "Email"),
         ("gender", "Gender"), ("national_id", "National ID"),
+        ("date_of_birth", "Date of birth"), ("place_of_birth", "Place of birth"),
         ("father_name", "Father name"), ("father_phone", "Father phone"),
         ("mother_name", "Mother name"), ("mother_phone", "Mother phone"),
         ("home_address", "Home address"),
@@ -2590,6 +2768,11 @@ def users():
             flash("Select the teacher profile assigned to this account.", "error")
         elif role in ("student", "parent") and not student_id:
             flash("Select the student profile linked to this account.", "error")
+        elif role == "teacher" and _teacher_limit_error(
+            db, teacher_id,
+            _teacher_class_ids(db, teacher_id) | {c for c in (_optional_int(x) for x in request.form.getlist("class_ids")) if c},
+        ):
+            flash("A class teacher (primary school) can have only one class.", "error")
         else:
             try:
                 db.execute(
@@ -2602,6 +2785,12 @@ def users():
                         student_id if role in ("student", "parent") else None,
                     ),
                 )
+                if role == "teacher":
+                    _set_teacher_classes(
+                        db, teacher_id,
+                        _teacher_class_ids(db, teacher_id)
+                        | {c for c in (_optional_int(x) for x in request.form.getlist("class_ids")) if c},
+                    )
                 db.commit()
                 flash("User account created.", "success")
                 return redirect(url_for("views.users"))
@@ -2610,15 +2799,22 @@ def users():
                 flash("Username or email is already in use, or the linked profile is invalid.", "error")
     accounts = db.execute(
         "SELECT u.id, u.username, u.email, u.role, u.is_active, "
-        "t.name AS teacher_name, s.name AS student_name FROM users u "
+        "u.teacher_id, t.name AS teacher_name, s.name AS student_name FROM users u "
         "LEFT JOIN teachers t ON t.id=u.teacher_id "
         "LEFT JOIN students s ON s.id=u.student_id ORDER BY u.id"
     ).fetchall()
     teachers = db.execute("SELECT id, name FROM teachers WHERE email <> 'unassigned@school.invalid' ORDER BY name").fetchall()
     students = db.execute("SELECT id, name FROM students ORDER BY name").fetchall()
+    class_rows = _sort_by_name(db.execute("SELECT id,name FROM courses").fetchall())
+    teacher_classes = {}
+    for course_id, people in _class_teacher_map(db).items():
+        name = next(c["name"] for c in class_rows if c["id"] == course_id)
+        for teacher_id, _, _ in people:
+            teacher_classes.setdefault(teacher_id, []).append(name)
+    teacher_classes = {k: sorted(v, key=_natural_key) for k, v in teacher_classes.items()}
     return render_template(
         "users.html", accounts=accounts, teachers=teachers, students=students,
-        roles=ROLES, role_labels=ROLE_LABELS,
+        roles=ROLES, role_labels=ROLE_LABELS, class_rows=class_rows, teacher_classes=teacher_classes,
     )
 
 
@@ -2717,6 +2913,61 @@ def profile():
     return render_template("profile.html", user=_current_user(), role_labels=ROLE_LABELS)
 
 
+TEACHING_LEVELS = ("class", "subject")
+
+
+def _teacher_class_ids(db, teacher_id):
+    return {
+        r["course_id"]
+        for r in db.execute("SELECT course_id FROM course_teachers WHERE teacher_id=?", (teacher_id,)).fetchall()
+    }
+
+
+def _teacher_limit_error(db, teacher_id, final_class_ids):
+    """A class teacher (primary school) can have only one class."""
+    teacher = db.execute("SELECT name,teaching_level FROM teachers WHERE id=?", (teacher_id,)).fetchone()
+    if teacher and teacher["teaching_level"] == "class" and len(final_class_ids) > 1:
+        return teacher["name"]
+    return None
+
+
+def _set_teacher_classes(db, teacher_id, class_ids):
+    """Make `class_ids` the classes of a teacher (classes where they are the main teacher always stay)."""
+    wanted = {c for c in class_ids if db.execute("SELECT 1 FROM courses WHERE id=?", (c,)).fetchone()}
+    mains = {r["id"] for r in db.execute("SELECT id FROM courses WHERE teacher_id=?", (teacher_id,)).fetchall()}
+    final = wanted | mains
+    current = _teacher_class_ids(db, teacher_id)
+    for course_id in current - final:
+        db.execute("DELETE FROM course_teachers WHERE course_id=? AND teacher_id=?", (course_id, teacher_id))
+    for course_id in final - current:
+        db.execute("INSERT OR IGNORE INTO course_teachers (course_id,teacher_id) VALUES (?,?)", (course_id, teacher_id))
+    return final
+
+
+def _set_class_teachers(db, course_id, extra_teacher_ids):
+    """Main teacher + extra teachers of one class."""
+    main = db.execute("SELECT teacher_id FROM courses WHERE id=?", (course_id,)).fetchone()["teacher_id"]
+    final = {t for t in extra_teacher_ids if db.execute("SELECT 1 FROM teachers WHERE id=?", (t,)).fetchone()} | {main}
+    current = {r["teacher_id"] for r in db.execute("SELECT teacher_id FROM course_teachers WHERE course_id=?", (course_id,)).fetchall()}
+    for teacher_id in current - final:
+        db.execute("DELETE FROM course_teachers WHERE course_id=? AND teacher_id=?", (course_id, teacher_id))
+    for teacher_id in final - current:
+        db.execute("INSERT OR IGNORE INTO course_teachers (course_id,teacher_id) VALUES (?,?)", (course_id, teacher_id))
+    return final
+
+
+def _class_teacher_map(db):
+    """{course_id: [(teacher_id, name, is_main), ...]} without the hidden placeholder teacher."""
+    result = {}
+    for r in db.execute(
+        "SELECT ct.course_id,t.id,t.name,(c.teacher_id=t.id) AS is_main FROM course_teachers ct "
+        "JOIN teachers t ON t.id=ct.teacher_id JOIN courses c ON c.id=ct.course_id "
+        "WHERE t.email<>? ORDER BY is_main DESC,t.name", (UNASSIGNED_TEACHER_EMAIL,),
+    ).fetchall():
+        result.setdefault(r["course_id"], []).append((r["id"], r["name"], bool(r["is_main"])))
+    return result
+
+
 def _merge_class(db, source_id, target_id):
     """Move everything in one class into another, then delete the emptied class."""
     source = db.execute("SELECT id,name FROM courses WHERE id=?", (source_id,)).fetchone()
@@ -2740,6 +2991,10 @@ def _merge_class(db, source_id, target_id):
             db.execute("DELETE FROM enrollments WHERE id=?", (enrollment["id"],))
         else:
             db.execute("UPDATE enrollments SET course_id=? WHERE id=?", (target_id, enrollment["id"]))
+    db.execute(
+        "INSERT OR IGNORE INTO course_teachers (course_id,teacher_id) "
+        "SELECT ?,teacher_id FROM course_teachers WHERE course_id=?", (target_id, source_id),
+    )
     db.execute("UPDATE homework SET course_id=? WHERE course_id=?", (target_id, source_id))
     db.execute("UPDATE timetable SET course_id=? WHERE course_id=?", (target_id, source_id))
     _retitle_students(db, source["name"], target["name"], source_id, merged_into=target_id)
@@ -2760,6 +3015,42 @@ def _retitle_students(db, old_name, new_name, course_id, merged_into=None):
     for student in db.execute("SELECT id,grade_level FROM students WHERE grade_level<>''").fetchall():
         if _class_key(student["grade_level"]) == old_key:
             db.execute("UPDATE students SET grade_level=? WHERE id=?", (new_name, student["id"]))
+
+
+@bp.route("/admin/teacher-classes", methods=("GET", "POST"))
+@roles_required("super_admin")
+def teacher_classes():
+    """Super Admin: choose which classes each teacher can see (one class, or several)."""
+    db = get_db()
+    if request.method == "POST":
+        teacher_id = _optional_int(request.form.get("teacher_id"))
+        teacher = db.execute(
+            "SELECT id,name FROM teachers WHERE id=? AND email<>?", (teacher_id, UNASSIGNED_TEACHER_EMAIL)
+        ).fetchone() if teacher_id else None
+        if teacher is None:
+            abort(404)
+        level = request.form.get("teaching_level", "subject")
+        if level not in TEACHING_LEVELS:
+            abort(400)
+        chosen = {c for c in (_optional_int(x) for x in request.form.getlist("class_ids")) if c}
+        mains = {r["id"] for r in db.execute("SELECT id FROM courses WHERE teacher_id=?", (teacher_id,)).fetchall()}
+        if level == "class" and len(chosen | mains) > 1:
+            flash(f"{teacher['name']} is a class teacher and can have only one class.", "error")
+        else:
+            db.execute("UPDATE teachers SET teaching_level=? WHERE id=?", (level, teacher_id))
+            _set_teacher_classes(db, teacher_id, chosen)
+            db.commit()
+            flash("Teacher classes saved.", "success")
+        return redirect(url_for("views.teacher_classes", _anchor=f"teacher-{teacher_id}"))
+    classes = _sort_by_name(db.execute("SELECT id,name,code,teacher_id FROM courses").fetchall())
+    teachers = db.execute(
+        "SELECT id,name,subject,teaching_level FROM teachers WHERE email<>? ORDER BY name",
+        (UNASSIGNED_TEACHER_EMAIL,),
+    ).fetchall()
+    return render_template(
+        "teacher_classes.html", classes=classes, teachers=teachers,
+        assigned={t["id"]: _teacher_class_ids(db, t["id"]) for t in teachers},
+    )
 
 
 @bp.route("/admin/classes", methods=("GET", "POST"))
@@ -2814,11 +3105,19 @@ def manage_classes():
             ):
                 flash("Another class already has this name. Use “Move students and delete” to merge them.", "error")
             else:
+                extras = {t for t in (_optional_int(x) for x in request.form.getlist("extra_teacher_ids")) if t}
+                blocked = next((
+                    n for n in (_teacher_limit_error(db, t, _teacher_class_ids(db, t) | {course_id})
+                                for t in extras | {teacher_id}) if n), None)
+                if blocked:
+                    flash(f"{blocked} is a class teacher and can have only one class.", "error")
+                    return redirect(url_for("views.manage_classes"))
                 try:
                     db.execute(
                         "UPDATE courses SET name=?,code=?,teacher_id=? WHERE id=?",
                         (name, code, teacher_id, course_id),
                     )
+                    _set_class_teachers(db, course_id, extras)
                     if name != course["name"]:
                         _retitle_students(db, course["name"], name, course_id)
                     db.commit()
@@ -2908,6 +3207,7 @@ def manage_classes():
     duplicate_keys = {k for k, n in key_counts.items() if n > 1}
     return render_template(
         "manage_classes.html",
+        class_teachers=_class_teacher_map(db),
         duplicate_keys=duplicate_keys,
         class_key=_class_key,
         classes=classes,
@@ -3131,11 +3431,13 @@ def bulk_sms():
         flash("Enter a recipient group and message draft within the allowed length.", "error")
         return redirect(url_for("views.portal", module="bulk-sms"))
     db = get_db()
-    db.execute(
+    new_id = db.execute(
         "INSERT INTO service_requests(module,title,details,created_by) "
         "VALUES('bulk-sms',?,?,?)",
         (title, details, session["user_id"]),
-    )
+    ).lastrowid
+    audit.log_message(db, "sms_draft", new_id, "created", title, details,
+                      title, _current_user(), {"status": "draft - nothing was sent"})
     db.commit()
     flash(
         "Request recorded. No SMS was sent because no messaging provider is configured.",
@@ -3174,6 +3476,16 @@ def delete_request(request_id):
         "orders", "bulk-sms", "tutoring", "parent-meetings",
     }:
         abort(400)
+    if module == "bulk-sms":
+        row = get_db().execute(
+            "SELECT * FROM service_requests WHERE id=? AND module=?", (request_id, module)
+        ).fetchone()
+        if row is None:
+            abort(404)
+        _trash_sms_draft(get_db(), row, _current_user())
+        get_db().commit()
+        flash("Moved to Deleted Items. Only the Super Admin can restore or empty it.", "success")
+        return redirect(url_for("views.portal", module=module))
     cursor = get_db().execute(
         "DELETE FROM service_requests WHERE id=? AND module=?", (request_id, module)
     )
@@ -3293,6 +3605,8 @@ def student_registration():
         "email": request.form.get("email", "").strip().lower(),
         "course_id": request.form.get("course_id", "").strip(),
         "class_name": _clean_class_name(request.form.get("class_name", "")),
+        "date_of_birth": request.form.get("date_of_birth", "").strip(),
+        "place_of_birth": request.form.get("place_of_birth", "").strip(),
         "father_phone": request.form.get("father_phone", "").strip(),
         "mother_phone": request.form.get("mother_phone", "").strip(),
         "father_occupation": request.form.get("father_occupation", "").strip(),
@@ -3334,13 +3648,14 @@ def student_registration():
     for student in db.execute(
         "SELECT s.id,s.name,s.email,s.grade_level,s.father_name,s.father_phone,"
         "s.father_occupation,s.mother_name,s.mother_phone,s.mother_occupation,"
-        "s.home_address,s.profile_picture FROM students s"
+        "s.home_address,s.profile_picture,s.date_of_birth,s.place_of_birth FROM students s"
     ).fetchall():
         names = sorted(enrolled_names.get(student["id"], []), key=_natural_key)
         keys = {_class_key(n) for n in names}
         if student["grade_level"]:
             keys.add(_class_key(student["grade_level"]))
         record = dict(student)
+        record["birth_display"] = _show_date(student["date_of_birth"])
         record["class_names"] = ", ".join(names) or student["grade_level"] or ""
         record["class_keys"] = "|".join(sorted(keys))
         record["search_text"] = _fold(
@@ -3403,6 +3718,10 @@ def student_registration():
             or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", values["email"])
         ):
             errors.append("Enter a valid student email address.")
+        if values["date_of_birth"] and (message := _birth_date_error(values["date_of_birth"])):
+            errors.append(message)
+        if len(values["place_of_birth"]) > 120:
+            errors.append("Place of birth must be 120 characters or fewer.")
         new_class_name = values["class_name"]
         if new_class_name:
             if len(new_class_name) > 120:
@@ -3439,8 +3758,8 @@ def student_registration():
                 cursor = db.execute(
                     "INSERT INTO students "
                     "(name,email,grade_level,father_phone,mother_phone,"
-                    "father_occupation,mother_occupation) "
-                    "VALUES (?,?,?,?,?,?,?)",
+                    "father_occupation,mother_occupation,date_of_birth,place_of_birth) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
                     (
                         values["name"],
                         values["email"],
@@ -3449,6 +3768,8 @@ def student_registration():
                         values["mother_phone"],
                         values["father_occupation"],
                         values["mother_occupation"],
+                        values["date_of_birth"],
+                        values["place_of_birth"],
                     ),
                 )
                 db.execute(
@@ -3653,7 +3974,7 @@ def delete_grade(grade_id):
             abort(403)
         query += (
             " AND enrollment_id IN (SELECT e.id FROM enrollments e "
-            "JOIN courses c ON c.id=e.course_id WHERE c.teacher_id=?)"
+            "JOIN courses c ON c.id=e.course_id WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?))"
         )
         params.append(user["teacher_id"])
     cursor = db.execute(query, params)
@@ -3698,7 +4019,7 @@ def staff_updates():
                 allowed = db.execute(
                     "SELECT s.id FROM students s JOIN enrollments e ON e.student_id=s.id "
                     "JOIN courses c ON c.id=e.course_id WHERE s.id=?"
-                    + (" AND c.teacher_id=?" if user["role"] == "teacher" else "")
+                    + (" AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)" if user["role"] == "teacher" else "")
                     + " LIMIT 1",
                     (student_id, *student_params),
                 ).fetchone()
@@ -3743,7 +4064,7 @@ def staff_updates():
     students = db.execute(
         "SELECT DISTINCT s.id,s.name,s.grade_level FROM students s "
         "JOIN enrollments e ON e.student_id=s.id JOIN courses c ON c.id=e.course_id "
-        "WHERE 1=1" + (" AND c.teacher_id=?" if user["role"] == "teacher" else "")
+        "WHERE 1=1" + (" AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)" if user["role"] == "teacher" else "")
         + " ORDER BY s.name",
         (user["teacher_id"],) if user["role"] == "teacher" else (),
     ).fetchall()
@@ -3798,7 +4119,7 @@ def _resource_records(db, resource, user):
                 "SELECT DISTINCT s.id,s.name,s.grade_level,"
                 "CASE WHEN s.gender IN ('Male','Female') THEN s.gender ELSE '' END AS gender "
                 "FROM students s JOIN enrollments e ON e.student_id=s.id "
-                "JOIN courses c ON c.id=e.course_id WHERE c.teacher_id=? ORDER BY s.name"
+                "JOIN courses c ON c.id=e.course_id WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?) ORDER BY s.name"
             )
             params = (user["teacher_id"],)
         else:
@@ -3852,7 +4173,7 @@ def manage(resource):
         if role == "teacher" and resource in {"grades", "attendance"}:
             editing_query += (
                 " AND EXISTS (SELECT 1 FROM enrollments e JOIN courses c "
-                "ON c.id=e.course_id WHERE e.id=enrollment_id AND c.teacher_id=?)"
+                "ON c.id=e.course_id WHERE e.id=enrollment_id AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?))"
             )
             params.append(user["teacher_id"])
         editing = db.execute(editing_query, params).fetchone()
@@ -3967,7 +4288,7 @@ def delete_record(resource, record_id):
                 abort(403)
             query += (
                 " AND EXISTS (SELECT 1 FROM enrollments e JOIN courses c "
-                "ON c.id=e.course_id WHERE e.id=enrollment_id AND c.teacher_id=?)"
+                "ON c.id=e.course_id WHERE e.id=enrollment_id AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?))"
             )
             params.append(user["teacher_id"])
         cursor = db.execute(query, params)
@@ -4007,7 +4328,7 @@ def homework():
         query = "SELECT h.* FROM homework h JOIN courses c ON c.id=h.course_id WHERE h.id=?"
         params = [editing_id]
         if teacher:
-            query += " AND c.teacher_id=?"
+            query += " AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)"
             params.append(user["teacher_id"])
         editing = db.execute(query, params).fetchone()
         if editing is None:
@@ -4021,7 +4342,7 @@ def homework():
         due_date = request.form.get("due_date", "").strip()
         course = db.execute(
             "SELECT id FROM courses WHERE id=?"
-            + (" AND teacher_id=?" if teacher else ""),
+            + (" AND id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)" if teacher else ""),
             (course_id, user["teacher_id"]) if teacher else (course_id,),
         ).fetchone() if course_id else None
         if not course or not title or not _valid_date(due_date):
@@ -4046,9 +4367,9 @@ def homework():
     )
     courses_query = "SELECT id,name FROM courses ORDER BY name"
     if teacher:
-        query += " WHERE c.teacher_id=?"
+        query += " WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)"
         params = (user["teacher_id"],)
-        courses = db.execute(courses_query.replace(" ORDER BY", " WHERE teacher_id=? ORDER BY"), params).fetchall()
+        courses = db.execute(courses_query.replace(" ORDER BY", " WHERE id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?) ORDER BY"), params).fetchall()
     else:
         params = ()
         courses = db.execute(courses_query).fetchall()
@@ -4066,7 +4387,7 @@ def delete_homework(homework_id):
     query = "DELETE FROM homework WHERE id=?"
     params = [homework_id]
     if user["role"] == "teacher":
-        query += " AND course_id IN (SELECT id FROM courses WHERE teacher_id=?)"
+        query += " AND course_id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)"
         params.append(user["teacher_id"])
     cursor = db.execute(query, params)
     if not cursor.rowcount:
@@ -4118,11 +4439,14 @@ def portal(module):
             or module == "bulk-sms" and role == "admin"
             or module == "tutoring" and role in {"admin", "teacher"}
         ) and len(description) <= 4000:
-            get_db().execute(
+            new_request = get_db().execute(
                 "INSERT INTO service_requests (module,title,details,created_by) "
                 "VALUES (?,?,?,?)",
                 (module, title, description, user["id"]),
-            )
+            ).lastrowid
+            if module == "bulk-sms":
+                audit.log_message(get_db(), "sms_draft", new_request, "created", title, description,
+                                  title, user, {"status": "draft - nothing was sent"})
             get_db().commit()
             if module == "bulk-sms":
                 flash(
@@ -4148,18 +4472,26 @@ def portal(module):
             if error:
                 flash(error, "error")
             else:
+                db_ = get_db()
                 if record_id:
-                    get_db().execute(
+                    db_.execute(
                         "UPDATE announcements SET title=?,body=?,period=?,expires_at=?,expiry_custom=? WHERE id=?",
                         (title, description, period, expires_at, is_custom, record_id),
                     )
+                    logged_id, logged_event = record_id, "edited"
                 else:
-                    get_db().execute(
-                        "INSERT INTO announcements (title,body,period,published_at,expires_at,expiry_custom) "
-                        "VALUES (?,?,?,?,?,?)",
-                        (title, description, period, published_at, expires_at, is_custom),
-                    )
-                get_db().commit()
+                    logged_id, logged_event = db_.execute(
+                        "INSERT INTO announcements (title,body,period,published_at,expires_at,expiry_custom,created_by) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (title, description, period, published_at, expires_at, is_custom, user["id"]),
+                    ).lastrowid, "created"
+                audit.log_message(
+                    db_, "announcement", logged_id, logged_event, title, description,
+                    "All staff (weekly bulletin)", user,
+                    {"period": period, "published_at": published_at, "ends_at": expires_at,
+                     "custom_end": bool(is_custom)},
+                )
+                db_.commit()
                 flash("Announcement updated." if record_id else "Announcement published.", "success")
                 return redirect(url_for("views.portal", module=module))
         elif module == "appointments" and _valid_datetime(starts_at):
@@ -4250,10 +4582,14 @@ def bulletin_archive():
                 "expires_at=?,expiry_custom=0 WHERE id=?",
                 (now, expires_at, row["id"]),
             )
+            full = db.execute("SELECT title,body FROM announcements WHERE id=?", (row["id"],)).fetchone()
+            audit.log_message(db, "announcement", row["id"], "restored", full["title"], full["body"],
+                              "All staff (weekly bulletin)", _current_user(), {"from": "archive"})
             flash("Bulletin restored and published again.", "success")
         elif action == "delete":
-            db.execute("DELETE FROM announcements WHERE id=?", (row["id"],))
-            flash("Bulletin permanently deleted.", "success")
+            _trash_announcement(db, db.execute("SELECT * FROM announcements WHERE id=?", (row["id"],)).fetchone(),
+                                _current_user())
+            flash("Moved to Deleted Items. Only the Super Admin can restore or empty it.", "success")
         else:
             abort(400)
         db.commit()
@@ -4283,7 +4619,7 @@ def global_search():
             rows = db.execute(
                 "SELECT DISTINCT s.id,s.name,s.email,s.grade_level FROM students s "
                 "JOIN enrollments e ON e.student_id=s.id JOIN courses c ON c.id=e.course_id "
-                "WHERE c.teacher_id=?", (user["teacher_id"],),
+                "WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)", (user["teacher_id"],),
             ).fetchall()
             link = url_for("views.manage", resource="students")
         else:
@@ -4347,6 +4683,14 @@ def delete_calendar_record(kind, record_id):
         abort(404)
     if kind == "appointments" and user["role"] == "teacher":
         abort(403)
+    if kind == "bulletin":
+        row = get_db().execute("SELECT * FROM announcements WHERE id=?", (record_id,)).fetchone()
+        if row is None:
+            abort(404)
+        _trash_announcement(get_db(), row, user)
+        get_db().commit()
+        flash("Moved to Deleted Items. Only the Super Admin can restore or empty it.", "success")
+        return redirect(url_for("views.portal", module=kind))
     cursor = get_db().execute(f"DELETE FROM {table} WHERE id=?", (record_id,))
     if not cursor.rowcount:
         abort(404)
@@ -4400,13 +4744,13 @@ def timetable():
     )
     params = ()
     if teacher:
-        query += " WHERE c.teacher_id=?"
+        query += " WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)"
         params = (user["teacher_id"],)
     records = db.execute(query + " ORDER BY t.weekday,t.starts_at", params).fetchall()
     courses_query = "SELECT id,name FROM courses ORDER BY name"
     courses = (
         db.execute(
-            courses_query.replace(" ORDER BY", " WHERE teacher_id=? ORDER BY"),
+            courses_query.replace(" ORDER BY", " WHERE id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?) ORDER BY"),
             (user["teacher_id"],),
         ).fetchall()
         if teacher else db.execute(courses_query).fetchall()
@@ -4442,6 +4786,26 @@ def _valid_date(value):
         return True
     except ValueError:
         return False
+
+
+def _birth_date_error(value):
+    """None when ``value`` (YYYY-MM-DD) is a believable date of birth."""
+    if not _valid_date(value):
+        return "Date of birth must be a valid date."
+    born = datetime.strptime(value, "%Y-%m-%d").date()
+    if born > date.today():
+        return "Date of birth cannot be in the future."
+    if born.year < 1950:
+        return "Date of birth must be 1950 or later."
+    return None
+
+
+def _show_date(value):
+    """2012-03-09 -> 09.03.2012 (empty stays empty)."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%d.%m.%Y")
+    except (TypeError, ValueError):
+        return value or ""
 
 
 def _valid_time(value):
@@ -4482,7 +4846,7 @@ def _read_form(definition, role, user):
                     query = query.replace(
                         " ORDER BY",
                         " WHERE e.id IN (SELECT e2.id FROM enrollments e2 JOIN courses c2 "
-                        "ON c2.id=e2.course_id WHERE c2.teacher_id=?) ORDER BY",
+                        "ON c2.id=e2.course_id WHERE c2.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)) ORDER BY",
                     )
                     params = (user["teacher_id"],)
                 valid_ids = {
@@ -4511,6 +4875,10 @@ def _read_form(definition, role, user):
                 value = int(numeric)
         elif kind == "date" and not _valid_date(value):
             return None, f"{label} must be a valid date."
+        elif name == "date_of_birth" and (error := _birth_date_error(value)):
+            return None, error
+        elif name == "place_of_birth" and len(value) > 120:
+            return None, "Place of birth must be 120 characters or fewer."
         elif name == "email":
             value = value.lower()
         values[name] = value
@@ -4529,7 +4897,7 @@ def _form_fields(definition, values, role, user):
                     query = query.replace(
                         " ORDER BY",
                         " WHERE e.id IN (SELECT e2.id FROM enrollments e2 JOIN courses c2 "
-                        "ON c2.id=e2.course_id WHERE c2.teacher_id=?) ORDER BY",
+                        "ON c2.id=e2.course_id WHERE c2.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)) ORDER BY",
                     )
                     params = (user["teacher_id"],)
                 choices = [dict(row) for row in get_db().execute(query, params).fetchall()]

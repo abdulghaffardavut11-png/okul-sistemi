@@ -45,7 +45,7 @@
       {% if accounts %}
         <div class="table-scroll"><table><thead><tr><th>{{ 'Account'|translate(language) }}</th><th>{{ 'Role'|translate(language) }}</th><th>{{ 'Linked profile'|translate(language) }}</th><th>{{ 'Status'|translate(language) }}</th><th>{{ 'Action'|translate(language) }}</th></tr></thead>
           <tbody>{% for account in accounts %}<tr>
-            <td><strong>{{ account.username }}</strong><br><small>{{ account.email or 'No email' }}</small></td>
+            <td><strong>{{ account.username }}</strong><br><small>{{ account.email or 'No email' }}</small><br><small class="muted">{{ 'Password is securely stored and cannot be viewed.'|translate(language) }}</small></td>
             <td>
               {% if account.id != session.get('user_id') and account.role != 'super_admin' %}
                 <form method="post" action="{{ url_for('views.update_user_role', user_id=account.id) }}" class="role-edit-form">
@@ -57,7 +57,30 @@
             </td>
             <td>{% if account.role == 'parent' %}{{ (linked_students.get(account.id, [])|join(', ')) or account.student_name or '—' }}{% else %}{{ account.teacher_name or account.student_name or '—' }}{% endif %}{% if account.role in class_scoped_roles %}<br><small class="muted">{% if account.role == 'teacher' %}{{ (teacher_classes.get(account.teacher_id) or [])|join(', ') }}{% else %}{{ (user_classes.get(account.id) or [])|join(', ') }}{% endif %}</small>{% endif %}{% if account.role == 'teacher' and account.teacher_id and account.teacher_attachment %}<br><a href="{{ url_for('views.teacher_attachment', teacher_id=account.teacher_id) }}">{{ 'Download attachment'|translate(language) }}</a>{% endif %}</td>
             <td>{{ ('Active' if account.is_active else 'Inactive')|translate(language) }}</td>
-            <td>{% if account.id != session.get('user_id') %}<div class="user-actions"><form method="post" action="{{ url_for('views.user_status', user_id=account.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small secondary-button" type="submit">{{ ('Deactivate' if account.is_active else 'Activate')|translate(language) }}</button></form><form method="post" action="{{ url_for('views.delete_user', user_id=account.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button></form></div>{% else %}<span class="muted">{{ 'Current account'|translate(language) }}</span>{% endif %}</td>
+            <td>
+              <button class="button-small secondary-button" type="button" data-open-user="user-edit-{{ account.id }}">{{ 'Edit'|translate(language) }}</button>
+              <dialog id="user-edit-{{ account.id }}" class="user-edit-dialog">
+                <form method="post" action="{{ url_for('views.update_user_credentials', user_id=account.id) }}" class="stack">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <h2>{{ 'Edit account'|translate(language) }} · {{ account.username }}</h2>
+                  <label for="account-email-{{ account.id }}">{{ 'Email'|translate(language) }}</label>
+                  <input id="account-email-{{ account.id }}" name="email" type="email" maxlength="254" value="{{ account.email or '' }}" {% if account.role in ('teacher','student') %}required{% endif %}>
+                  <label for="account-password-{{ account.id }}">{{ 'New password'|translate(language) }}</label>
+                  <input id="account-password-{{ account.id }}" name="password" type="password" minlength="12" autocomplete="new-password">
+                  <small class="muted">{{ 'Leave blank to keep the current password. Existing passwords are never displayed.'|translate(language) }}</small>
+                  <div class="user-actions">
+                    <button type="submit">{{ 'Save changes'|translate(language) }}</button>
+                    <button class="button-small secondary-button" type="button" data-close-user>{{ 'Close'|translate(language) }}</button>
+                  </div>
+                </form>
+              </dialog>
+              {% if account.id != session.get('user_id') %}
+                <div class="user-actions">
+                  <form method="post" action="{{ url_for('views.user_status', user_id=account.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small secondary-button" type="submit">{{ ('Deactivate' if account.is_active else 'Activate')|translate(language) }}</button></form>
+                  <form method="post" action="{{ url_for('views.delete_user', user_id=account.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button></form>
+                </div>
+              {% else %}<span class="muted">{{ 'Current account'|translate(language) }}</span>{% endif %}
+            </td>
           </tr>{% endfor %}</tbody>
         </table></div>
       {% else %}<div class="card-empty"><p>{{ 'No accounts have been created.'|translate(language) }}</p></div>{% endif %}
@@ -65,6 +88,14 @@
   </div>
   <script>
     (() => {
+      document.querySelectorAll("[data-open-user]").forEach((button) => {
+        button.addEventListener("click", () => document.getElementById(button.dataset.openUser).showModal());
+      });
+      document.querySelectorAll("[data-close-user]").forEach((button) => {
+        button.addEventListener("click", () => button.closest("dialog").close());
+      });
+      const requestedEdit = {{ edit_user_id|tojson }};
+      if (requestedEdit) document.getElementById(`user-edit-${requestedEdit}`)?.showModal();
       const role = document.getElementById("role");
       const email = document.getElementById("email");
       const emailLabel = document.getElementById("email-label");

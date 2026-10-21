@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from werkzeug.security import generate_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from school_system import create_app
 from school_system.db import get_db
@@ -2773,6 +2773,129 @@ class SchoolSystemTestCase(unittest.TestCase):
         )
         self.assertEqual(student_session.get("/settings").status_code, 403)
         self.assertEqual(self.client.post(f"/users/{student_account}/status").status_code, 302)
+
+    def test_super_admin_can_edit_user_email_and_reset_password_safely(self):
+        with self.app.app_context():
+            db = get_db()
+            student_id = db.execute(
+                "INSERT INTO students(name,email,grade_level) VALUES (?,?,?)",
+                ("Credential Student", "student-old@example.test", "Grade 1"),
+            ).lastrowid
+            teacher_id = db.execute(
+                "INSERT INTO teachers(name,email,subject) VALUES (?,?,?)",
+                ("Credential Teacher", "teacher-old@example.test", "Math"),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO users(username,email,password_hash,role,student_id) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    "credential-student",
+                    None,
+                    generate_password_hash("student-old-password", method="pbkdf2:sha256"),
+                    "student",
+                    student_id,
+                ),
+            )
+            student_user_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            db.execute(
+                "INSERT INTO users(username,email,password_hash,role,teacher_id) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    "credential-teacher",
+                    "teacher-old@example.test",
+                    generate_password_hash("teacher-old-password", method="pbkdf2:sha256"),
+                    "teacher",
+                    teacher_id,
+                ),
+            )
+            teacher_user_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            db.commit()
+
+        self.sign_in()
+        page = self.client.get("/users").data.decode()
+        self.assertIn("Password is securely stored and cannot be viewed.", page)
+        self.assertNotIn("student-old-password", page)
+        self.assertNotIn("teacher-old-password", page)
+
+        response = self.client.post(
+            f"/users/{teacher_user_id}/credentials",
+            data={"email": "teacher-new@example.test", "password": "teacher-new-password"},
+        )
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            db = get_db()
+            teacher_account = db.execute(
+                "SELECT email,password_hash FROM users WHERE id=?", (teacher_user_id,)
+            ).fetchone()
+            teacher_profile = db.execute(
+                "SELECT email FROM teachers WHERE id=?", (teacher_id,)
+            ).fetchone()
+            self.assertEqual(teacher_account["email"], "teacher-new@example.test")
+            self.assertTrue(check_password_hash(teacher_account["password_hash"], "teacher-new-password"))
+            self.assertEqual(teacher_profile["email"], "teacher-new@example.test")
+
+        response = self.client.post(
+            f"/users/{student_user_id}/credentials",
+            data={"email": "student-new@example.test", "password": "student-new-password"},
+        )
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            db = get_db()
+            student_account = db.execute(
+                "SELECT email,password_hash FROM users WHERE id=?", (student_user_id,)
+            ).fetchone()
+            student_profile = db.execute(
+                "SELECT email FROM students WHERE id=?", (student_id,)
+            ).fetchone()
+            self.assertEqual(student_account["email"], "student-new@example.test")
+            self.assertTrue(check_password_hash(student_account["password_hash"], "student-new-password"))
+            self.assertEqual(student_profile["email"], "student-new@example.test")
+
+        preserved_hash = student_account["password_hash"]
+        self.client.post(
+            f"/users/{student_user_id}/credentials",
+            data={"email": "student-final@example.test", "password": ""},
+        )
+        with self.app.app_context():
+            self.assertEqual(
+                get_db().execute(
+                    "SELECT password_hash FROM users WHERE id=?", (student_user_id,)
+                ).fetchone()["password_hash"],
+                preserved_hash,
+            )
+        student_management = self.client.get("/manage/students")
+        self.assertIn(b"Edit portal account", student_management.data)
+        self.assertIn(
+            f"/users?edit_user_id={student_user_id}".encode(),
+            student_management.data,
+        )
+        response = self.client.post(
+            f"/manage/students?edit={student_id}",
+            data={
+                "name": "Credential Student",
+                "email": "student-managed@example.test",
+                "grade_level": "Grade 1",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            self.assertEqual(
+                get_db().execute(
+                    "SELECT email FROM users WHERE id=?", (student_user_id,)
+                ).fetchone()["email"],
+                "student-managed@example.test",
+            )
+
+        self.client.post("/logout")
+        self.add_user("credential-manager", "manager")
+        self.sign_in_as("credential-manager", "a-secure-test-password")
+        self.assertEqual(
+            self.client.post(
+                f"/users/{student_user_id}/credentials",
+                data={"email": "forbidden@example.test", "password": "another-new-password"},
+            ).status_code,
+            403,
+        )
 
     def test_teacher_account_creates_private_attachment_and_is_listed_immediately(self):
         self.sign_in()

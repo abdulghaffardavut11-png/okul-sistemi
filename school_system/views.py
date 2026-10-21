@@ -2980,9 +2980,11 @@ def users():
                         pass
                 flash(_integrity_message(error), "error")
     accounts = db.execute(
-        "SELECT u.id, u.username, COALESCE(u.email,s.email) AS email, u.role, u.is_active, "
+        "SELECT u.id, u.username, "
+        "CASE WHEN u.role='parent' THEN u.email ELSE COALESCE(u.email,s.email) END AS email, "
+        "u.role, u.is_active, "
         "u.teacher_id, t.name AS teacher_name, t.attachment AS teacher_attachment, "
-        "s.name AS student_name FROM users u "
+        "u.student_id, s.name AS student_name FROM users u "
         "LEFT JOIN teachers t ON t.id=u.teacher_id "
         "LEFT JOIN students s ON s.id=u.student_id ORDER BY u.id"
     ).fetchall()
@@ -3011,7 +3013,82 @@ def users():
         class_rows=class_rows, teacher_classes=teacher_classes, students=students,
         linked_students=linked_students, class_scoped_roles=CLASS_SCOPED_ROLES,
         user_classes=user_classes,
+        edit_user_id=request.args.get("edit_user_id", type=int),
     )
+
+
+@bp.post("/users/<int:user_id>/credentials")
+@roles_required("super_admin")
+def update_user_credentials(user_id):
+    db = get_db()
+    account = db.execute(
+        "SELECT id,role,teacher_id,student_id FROM users WHERE id=?",
+        (user_id,),
+    ).fetchone()
+    if account is None:
+        abort(404)
+
+    email = request.form.get("email", "").strip().lower() or None
+    password = request.form.get("password", "")
+    if email and (
+        len(email) > 254
+        or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email)
+    ):
+        flash("Enter a valid email address.", "error")
+        return redirect(url_for("views.users", edit_user_id=user_id))
+    if account["role"] in {"teacher", "student"} and not email:
+        flash("An email address is required for this account.", "error")
+        return redirect(url_for("views.users", edit_user_id=user_id))
+    if password and len(password) < 12:
+        flash("Password must contain at least 12 characters.", "error")
+        return redirect(url_for("views.users", edit_user_id=user_id))
+
+    conflicting_user = db.execute(
+        "SELECT 1 FROM users WHERE lower(email)=lower(?) AND id<>? LIMIT 1",
+        (email, user_id),
+    ).fetchone() if email else None
+    conflicting_student = db.execute(
+        "SELECT 1 FROM students WHERE lower(email)=lower(?) "
+        "AND (? IS NULL OR id<>?) LIMIT 1",
+        (email, account["student_id"], account["student_id"]),
+    ).fetchone() if email else None
+    conflicting_teacher = db.execute(
+        "SELECT 1 FROM teachers WHERE lower(email)=lower(?) "
+        "AND (? IS NULL OR id<>?) LIMIT 1",
+        (email, account["teacher_id"], account["teacher_id"]),
+    ).fetchone() if email else None
+    if conflicting_user or conflicting_student or conflicting_teacher:
+        flash("Another account or profile already uses that email address.", "error")
+        return redirect(url_for("views.users", edit_user_id=user_id))
+
+    try:
+        if password:
+            db.execute(
+                "UPDATE users SET email=?,password_hash=? WHERE id=?",
+                (
+                    email,
+                    generate_password_hash(password, method="pbkdf2:sha256"),
+                    user_id,
+                ),
+            )
+        else:
+            db.execute("UPDATE users SET email=? WHERE id=?", (email, user_id))
+        if account["role"] == "teacher" and account["teacher_id"]:
+            db.execute(
+                "UPDATE teachers SET email=? WHERE id=?",
+                (email, account["teacher_id"]),
+            )
+        elif account["role"] == "student" and account["student_id"]:
+            db.execute(
+                "UPDATE students SET email=? WHERE id=?",
+                (email, account["student_id"]),
+            )
+        db.commit()
+        flash("Account email and password settings updated.", "success")
+    except sqlite3.IntegrityError as error:
+        db.rollback()
+        flash(_integrity_message(error), "error")
+    return redirect(url_for("views.users"))
 
 
 @bp.post("/users/<int:user_id>/status")
@@ -4517,6 +4594,16 @@ def manage(resource):
                         f"UPDATE {definition['table']} SET {assignments} WHERE id = ?",
                         [values[field] for field in fields] + [editing_id],
                     )
+                    if resource == "students":
+                        db.execute(
+                            "UPDATE users SET email=? WHERE role='student' AND student_id=?",
+                            (values["email"], editing_id),
+                        )
+                    elif resource == "teachers":
+                        db.execute(
+                            "UPDATE users SET email=? WHERE role='teacher' AND teacher_id=?",
+                            (values["email"], editing_id),
+                        )
                     flash(f"{definition['singular'].capitalize()} updated.", "success")
                 db.commit()
                 if resource == "attendance":
@@ -4538,12 +4625,22 @@ def manage(resource):
                 flash(_integrity_message(error), "error")
 
     records = _resource_records(db, resource, user)
+    student_portal_accounts = {}
+    if resource == "students" and role == "super_admin":
+        for record in records:
+            linked_accounts = db.execute(
+                "SELECT DISTINCT u.id FROM users u LEFT JOIN user_students us ON us.user_id=u.id "
+                "WHERE u.student_id=? OR us.student_id=? ORDER BY u.id",
+                (record["id"], record["id"]),
+            ).fetchall()
+            student_portal_accounts[record["id"]] = [row["id"] for row in linked_accounts]
     form_values = dict(editing) if editing is not None else {}
     form_fields = _form_fields(definition, form_values, role, user)
     return render_template(
         "manage.html", resource=resource, definition=definition, records=records,
         form_fields=form_fields, editing=editing, editable=editable,
         teacher_student_view=role == "teacher" and resource == "students",
+        student_portal_accounts=student_portal_accounts,
     )
 
 

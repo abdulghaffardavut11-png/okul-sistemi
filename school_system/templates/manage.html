@@ -63,6 +63,11 @@
                     {% if resource == 'students' and session.get('role') in ('super_admin','manager','admin') %}
                       <a href="{{ url_for('views.export_student_report', student_id=record.id) }}">{{ 'Export report'|translate(language) }}</a>
                     {% endif %}
+                    {% if resource == 'students' and session.get('role') == 'super_admin' %}
+                      {% for account_id in (student_portal_accounts|default({})).get(record.id, []) %}
+                        <a href="{{ url_for('views.users', edit_user_id=account_id) }}">{{ 'Edit portal account'|translate(language) }}</a>
+                      {% endfor %}
+                    {% endif %}
                     {% if editable %}<a href="{{ url_for('views.manage', resource=resource, edit=record.id) }}">{{ 'Edit'|translate(language) }}</a>{% endif %}
                     {% if session.get('role') in ('super_admin','manager','admin') or session.get('role') == 'teacher' and resource in ('grades','attendance') %}
                       <form method="post" action="{{ url_for('views.delete_record', resource=resource, record_id=record.id) }}"

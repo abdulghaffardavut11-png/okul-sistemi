@@ -239,6 +239,23 @@ TR_EXTRA = {
     "The file is too large (1 MB maximum).": "Dosya çok büyük (en fazla 1 MB).",
     "The file could not be read.": "Dosya okunamadı.",
     "Each translation can have at most 500 characters.": "Her çeviri en fazla 500 karakter olabilir.",
+    "A teacher profile already uses this email. Use a different email address.": "Bu e-posta adresi zaten bir öğretmen profili tarafından kullanılıyor. Farklı bir e-posta adresi kullanın.",
+    "Attach File (Choose File)": "Dosya ekle (Dosya seç)",
+    "Create a student or parent account using the student's record email.": "Öğrenci veya veli hesabını öğrencinin kaydındaki e-posta adresiyle oluşturun.",
+    "Create a teacher account to add its teaching profile and class assignments.": "Öğretmen profili ve sınıf ataması eklemek için öğretmen hesabı oluşturun.",
+    "Download attachment": "Eki indir",
+    "Enter the email address from the student's record.": "Öğrenci kaydındaki e-posta adresini girin.",
+    "Enter the teacher's email address.": "Öğretmenin e-posta adresini girin.",
+    "Enter the teaching subject or branch.": "Öğretim alanını veya branşı girin.",
+    "Home Address": "Ev adresi",
+    "No student record matches that email address.": "Bu e-posta adresiyle eşleşen bir öğrenci kaydı yok.",
+    "One or more selected classes are invalid.": "Seçilen sınıflardan biri veya daha fazlası geçersiz.",
+    "One or more selected classes do not exist.": "Seçilen sınıflardan biri veya daha fazlası mevcut değil.",
+    "Phone Number": "Telefon numarası",
+    "Student / child email (from student record)": "Öğrenci / çocuk e-postası (öğrenci kaydındaki)",
+    "Teacher email (required)": "Öğretmen e-postası (zorunlu)",
+    "Teaching Subject / Branch": "Öğretim alanı / branş",
+    "Use the email on the student record to link this student or parent account. Parents do not need a separate email address.": "Öğrenci veya veli hesabını bağlamak için öğrenci kaydındaki e-posta adresini kullanın. Velilerin ayrı bir e-posta adresine ihtiyacı yoktur.",
 }
 
 # French: a small, carefully checked core (everything else falls back to English until

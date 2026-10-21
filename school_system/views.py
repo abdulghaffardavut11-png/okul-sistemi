@@ -2756,55 +2756,97 @@ def users():
         email = request.form.get("email", "").strip().lower() or None
         password = request.form.get("password", "")
         role = request.form.get("role", "")
-        teacher_id = _optional_int(request.form.get("teacher_id"))
-        student_id = _optional_int(request.form.get("student_id"))
+        subject = request.form.get("subject", "").strip()
+        phone = request.form.get("phone", "").strip()
+        home_address = request.form.get("home_address", "").strip()
+        student_id = None
+        teacher_id = None
+        attachment = ""
+        saved_attachment = ""
+        raw_class_ids = request.form.getlist("class_ids")
+        parsed_class_ids = [_optional_int(value) for value in raw_class_ids]
+        selected_class_ids = {class_id for class_id in parsed_class_ids if class_id}
         if not username or len(username) > 80:
             flash("Username must contain 1–80 characters.", "error")
         elif role not in set(ROLES) - {"super_admin"}:
             flash("Select a valid role.", "error")
         elif len(password) < 12:
             flash("Password must contain at least 12 characters.", "error")
-        elif role == "teacher" and not teacher_id:
-            flash("Select the teacher profile assigned to this account.", "error")
-        elif role in ("student", "parent") and not student_id:
-            flash("Select the student profile linked to this account.", "error")
-        elif role == "teacher" and _teacher_limit_error(
-            db, teacher_id,
-            _teacher_class_ids(db, teacher_id) | {c for c in (_optional_int(x) for x in request.form.getlist("class_ids")) if c},
+        elif role == "teacher" and not email:
+            flash("Enter the teacher's email address.", "error")
+        elif role == "teacher" and not subject:
+            flash("Enter the teaching subject or branch.", "error")
+        elif role == "teacher" and db.execute(
+            "SELECT 1 FROM teachers WHERE lower(email)=lower(?)", (email,)
+        ).fetchone():
+            flash("A teacher profile already uses this email. Use a different email address.", "error")
+        elif role in ("student", "parent") and not email:
+            flash("Enter the email address from the student's record.", "error")
+        elif role in ("student", "parent") and not (
+            student := db.execute(
+                "SELECT id FROM students WHERE lower(email)=lower(?)", (email,)
+            ).fetchone()
         ):
-            flash("A class teacher (primary school) can have only one class.", "error")
+            flash("No student record matches that email address.", "error")
+        elif role == "teacher" and any(
+            class_id is None or class_id <= 0 for class_id in parsed_class_ids
+        ):
+            flash("One or more selected classes are invalid.", "error")
+        elif role == "teacher" and selected_class_ids and any(
+            not db.execute("SELECT 1 FROM courses WHERE id=?", (class_id,)).fetchone()
+            for class_id in selected_class_ids
+        ):
+            flash("One or more selected classes do not exist.", "error")
         else:
+            if role in ("student", "parent"):
+                student_id = student["id"]
+                email = None
+            elif role == "teacher":
+                uploaded_file = request.files.get("attachment")
+                if uploaded_file and uploaded_file.filename:
+                    try:
+                        saved_attachment = _store_teacher_attachment(uploaded_file)
+                    except ValueError as error:
+                        flash(str(error), "error")
+                        return redirect(url_for("views.users"))
+                    attachment = saved_attachment
             try:
+                if role == "teacher":
+                    teacher_id = db.execute(
+                        "INSERT INTO teachers "
+                        "(name,email,subject,phone,home_address,attachment) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (username, email, subject, phone, home_address, attachment),
+                    ).lastrowid
                 db.execute(
                     "INSERT INTO users (username, email, password_hash, role, teacher_id, student_id) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     (
-                        username, email,
+                        username, email if role not in ("student", "parent") else None,
                         generate_password_hash(password, method="pbkdf2:sha256"),
-                        role, teacher_id if role == "teacher" else None,
-                        student_id if role in ("student", "parent") else None,
-                    ),
+                        role, teacher_id, student_id,
+                    )
                 )
                 if role == "teacher":
-                    _set_teacher_classes(
-                        db, teacher_id,
-                        _teacher_class_ids(db, teacher_id)
-                        | {c for c in (_optional_int(x) for x in request.form.getlist("class_ids")) if c},
-                    )
+                    _set_teacher_classes(db, teacher_id, selected_class_ids)
                 db.commit()
                 flash("User account created.", "success")
                 return redirect(url_for("views.users"))
-            except sqlite3.IntegrityError:
+            except sqlite3.IntegrityError as error:
                 db.rollback()
-                flash("Username or email is already in use, or the linked profile is invalid.", "error")
+                if saved_attachment:
+                    try:
+                        os.remove(os.path.join(current_app.config["UPLOAD_FOLDER"], saved_attachment))
+                    except FileNotFoundError:
+                        pass
+                flash(_integrity_message(error), "error")
     accounts = db.execute(
-        "SELECT u.id, u.username, u.email, u.role, u.is_active, "
-        "u.teacher_id, t.name AS teacher_name, s.name AS student_name FROM users u "
+        "SELECT u.id, u.username, COALESCE(u.email,s.email) AS email, u.role, u.is_active, "
+        "u.teacher_id, t.name AS teacher_name, t.attachment AS teacher_attachment, "
+        "s.name AS student_name FROM users u "
         "LEFT JOIN teachers t ON t.id=u.teacher_id "
         "LEFT JOIN students s ON s.id=u.student_id ORDER BY u.id"
     ).fetchall()
-    teachers = db.execute("SELECT id, name FROM teachers WHERE email <> 'unassigned@school.invalid' ORDER BY name").fetchall()
-    students = db.execute("SELECT id, name FROM students ORDER BY name").fetchall()
     class_rows = _sort_by_name(db.execute("SELECT id,name FROM courses").fetchall())
     teacher_classes = {}
     for course_id, people in _class_teacher_map(db).items():
@@ -2813,8 +2855,8 @@ def users():
             teacher_classes.setdefault(teacher_id, []).append(name)
     teacher_classes = {k: sorted(v, key=_natural_key) for k, v in teacher_classes.items()}
     return render_template(
-        "users.html", accounts=accounts, teachers=teachers, students=students,
-        roles=ROLES, role_labels=ROLE_LABELS, class_rows=class_rows, teacher_classes=teacher_classes,
+        "users.html", accounts=accounts, roles=ROLES, role_labels=ROLE_LABELS,
+        class_rows=class_rows, teacher_classes=teacher_classes,
     )
 
 
@@ -2853,33 +2895,55 @@ def update_user_role(user_id):
         flash("Your own super administrator role cannot be changed.", "error")
         return redirect(url_for("views.users"))
     role = request.form.get("role", "")
-    teacher_id = _optional_int(request.form.get("teacher_id"))
-    student_id = _optional_int(request.form.get("student_id"))
+    db = get_db()
+    current = db.execute(
+        "SELECT role,teacher_id,student_id FROM users WHERE id=? AND role!='super_admin'",
+        (user_id,),
+    ).fetchone()
+    if current is None:
+        abort(404)
     if role not in set(ROLES) - {"super_admin"}:
         flash("Select a valid non-administrator role.", "error")
-    elif role == "teacher" and not get_db().execute(
-        "SELECT 1 FROM teachers WHERE id=?", (teacher_id,)
-    ).fetchone():
-        flash("Select an existing teacher profile.", "error")
-    elif role in ("student", "parent") and not get_db().execute(
-        "SELECT 1 FROM students WHERE id=?", (student_id,)
-    ).fetchone():
-        flash("Select an existing student profile.", "error")
+    elif role == "teacher" and not current["teacher_id"]:
+        flash("Create a teacher account to add its teaching profile and class assignments.", "error")
+    elif role in ("student", "parent") and not current["student_id"]:
+        flash("Create a student or parent account using the student's record email.", "error")
     else:
-        cursor = get_db().execute(
+        cursor = db.execute(
             "UPDATE users SET role=?,teacher_id=?,student_id=? WHERE id=? AND role!='super_admin'",
             (
                 role,
-                teacher_id if role == "teacher" else None,
-                student_id if role in ("student", "parent") else None,
+                current["teacher_id"] if role == "teacher" else None,
+                current["student_id"] if role in ("student", "parent") else None,
                 user_id,
             ),
         )
         if not cursor.rowcount:
             abort(404)
-        get_db().commit()
+        db.commit()
         flash("Account role and linked profile updated.", "success")
     return redirect(url_for("views.users"))
+
+
+@bp.get("/users/teacher-attachment/<int:teacher_id>")
+@roles_required("super_admin", "manager", "admin", "teacher")
+def teacher_attachment(teacher_id):
+    user = _current_user()
+    if user["role"] == "teacher" and user["teacher_id"] != teacher_id:
+        abort(403)
+    teacher = get_db().execute(
+        "SELECT attachment FROM teachers WHERE id=?", (teacher_id,)
+    ).fetchone()
+    if teacher is None or not teacher["attachment"]:
+        abort(404)
+    response = send_from_directory(
+        current_app.config["UPLOAD_FOLDER"],
+        teacher["attachment"],
+        as_attachment=True,
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @bp.post("/users/<int:user_id>/delete")
@@ -4935,6 +4999,29 @@ def _store_uploaded_image(upload, profile=False):
     with open(os.path.join(upload_dir, filename), "wb") as image_file:
         image_file.write(content)
     return filename
+
+
+def _store_teacher_attachment(upload):
+    filename = os.path.basename(upload.filename or "")
+    extension = os.path.splitext(filename)[1].lower()
+    if extension not in {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+        raise ValueError("Attach a PDF, PNG, JPEG, GIF or WebP file.")
+    content = upload.read(1024 * 1024 + 1)
+    if not content or len(content) > 1024 * 1024:
+        raise ValueError("The attachment must be no larger than 1 MB.")
+    if extension == ".pdf" and not content.startswith(b"%PDF-"):
+        raise ValueError("The PDF attachment is invalid.")
+    if extension in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+        actual_extension = _image_extension(content)
+        if actual_extension is None:
+            raise ValueError("The image attachment is invalid.")
+        extension = ".jpg" if actual_extension == "jpg" else f".{actual_extension}"
+    stored_name = f"teacher-{secrets.token_hex(16)}{extension}"
+    upload_dir = current_app.config["UPLOAD_FOLDER"]
+    os.makedirs(upload_dir, exist_ok=True)
+    with open(os.path.join(upload_dir, stored_name), "wb") as attachment_file:
+        attachment_file.write(content)
+    return stored_name
 
 
 def _integrity_message(error):

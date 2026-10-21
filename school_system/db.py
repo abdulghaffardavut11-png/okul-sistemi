@@ -393,6 +393,7 @@ def init_db():
             "phone": "TEXT NOT NULL DEFAULT ''",
             "home_address": "TEXT NOT NULL DEFAULT ''",
             "profile_picture": "TEXT NOT NULL DEFAULT ''",
+            "attachment": "TEXT NOT NULL DEFAULT ''",
         },
     )
     _add_columns(

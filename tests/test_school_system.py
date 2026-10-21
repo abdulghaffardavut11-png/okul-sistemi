@@ -1421,18 +1421,28 @@ class SchoolSystemTestCase(unittest.TestCase):
             rows = {r[0] for r in get_db().execute("SELECT teacher_id FROM course_teachers WHERE course_id=?", (ids["Grade 7"],))}
         self.assertEqual(rows, {main_t, math_t})
 
-        # User Accounts: the class picker is always on the form, and a new teacher login gets its classes
+        # User Accounts: the profile selectors are gone, and a new teacher login gets its classes.
         users_page = self.client.get("/users").data.decode()
+        self.assertNotIn('name="teacher_id"', users_page)
+        self.assertNotIn('name="student_id"', users_page)
         self.assertIn('name="class_ids"', users_page)
         self.assertIn("Assigned classes", users_page)
-        with self.app.app_context():
-            new_t = get_db().execute("INSERT INTO teachers (name,email,subject) VALUES ('New Teacher','nt@x.test','S')").lastrowid
-            get_db().commit()
         created = self.client.post("/users", data={
-            "username": "nt-login", "role": "teacher", "teacher_id": new_t, "password": "a-secure-test-password",
+            "username": "New Teacher", "email": "nt-login@x.test", "role": "teacher",
+            "subject": "Science", "phone": "12345", "home_address": "Home",
+            "password": "a-secure-test-password",
             "class_ids": [ids["Grade 6"], ids["Grade 7"]]}, follow_redirects=True)
         self.assertIn(b"User account created.", created.data)
         self.assertIn("Grade 6, Grade 7", self.client.get("/users").data.decode())
+        with self.app.app_context():
+            teacher = get_db().execute(
+                "SELECT t.id,t.subject,t.phone,t.home_address FROM users u "
+                "JOIN teachers t ON t.id=u.teacher_id WHERE u.username='New Teacher'"
+            ).fetchone()
+            self.assertEqual(
+                (teacher["subject"], teacher["phone"], teacher["home_address"]),
+                ("Science", "12345", "Home"),
+            )
 
     def test_message_archive_trash_append_only_and_tamper_evidence(self):
         import sqlite3 as _sqlite3
@@ -2673,7 +2683,7 @@ class SchoolSystemTestCase(unittest.TestCase):
                 "email": "teacher@example.test",
                 "password": "teacher-password-123",
                 "role": "teacher",
-                "teacher_id": str(teacher_id),
+                "subject": "Science",
             },
             follow_redirects=True,
         )
@@ -2682,13 +2692,24 @@ class SchoolSystemTestCase(unittest.TestCase):
             "/users",
             data={
                 "username": "student-login",
+                "email": "learner@example.test",
                 "password": "student-password-123",
                 "role": "student",
-                "student_id": str(student_id),
             },
             follow_redirects=True,
         )
         self.assertIn(b"User account created.", student_response.data)
+        parent_response = self.client.post(
+            "/users",
+            data={
+                "username": "parent-login",
+                "email": "learner@example.test",
+                "password": "parent-password-123",
+                "role": "parent",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"User account created.", parent_response.data)
         with self.app.app_context():
             teacher_account = get_db().execute(
                 "SELECT id FROM users WHERE username='teacher-login'"
@@ -2696,6 +2717,11 @@ class SchoolSystemTestCase(unittest.TestCase):
             student_account = get_db().execute(
                 "SELECT id FROM users WHERE username='student-login'"
             ).fetchone()["id"]
+            parent_account = get_db().execute(
+                "SELECT student_id,email FROM users WHERE username='parent-login'"
+            ).fetchone()
+            self.assertEqual(parent_account["student_id"], student_id)
+            self.assertIsNone(parent_account["email"])
         changed = self.client.post(
             f"/users/{teacher_account}/role",
             data={"role": "manager"},
@@ -2716,6 +2742,57 @@ class SchoolSystemTestCase(unittest.TestCase):
         )
         self.assertEqual(student_session.get("/settings").status_code, 403)
         self.assertEqual(self.client.post(f"/users/{student_account}/status").status_code, 302)
+
+    def test_teacher_account_creates_private_attachment_and_is_listed_immediately(self):
+        self.sign_in()
+        created = self.client.post(
+            "/users",
+            data={
+                "username": "Attached Teacher",
+                "email": "attached-teacher@example.test",
+                "password": "a-secure-test-password",
+                "role": "teacher",
+                "subject": "Mathematics",
+                "attachment": (io.BytesIO(b"%PDF-1.4\nteacher document"), "teaching.pdf"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertIn(b"User account created.", created.data)
+        self.assertIn(b"Attached Teacher", created.data)
+        with self.app.app_context():
+            account = get_db().execute(
+                "SELECT u.teacher_id,t.attachment FROM users u "
+                "JOIN teachers t ON t.id=u.teacher_id WHERE u.username='Attached Teacher'"
+            ).fetchone()
+            teacher_id = account["teacher_id"]
+            attachment = account["attachment"]
+            self.assertTrue(attachment.startswith("teacher-"))
+            self.assertEqual(
+                {row["course_id"] for row in get_db().execute(
+                    "SELECT course_id FROM course_teachers WHERE teacher_id=?",
+                    (teacher_id,),
+                )},
+                set(),
+            )
+        download_url = f"/users/teacher-attachment/{teacher_id}"
+        response = self.client.get(download_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, b"%PDF-1.4\nteacher document")
+        response.close()
+
+        with self.app.app_context():
+            other_teacher = get_db().execute(
+                "INSERT INTO teachers (name,email,subject) VALUES ('Other','other@example.test','Other')"
+            ).lastrowid
+            get_db().commit()
+        self.add_user("other-teacher", "teacher", teacher_id=other_teacher)
+        teacher_client = self.app.test_client()
+        teacher_client.post(
+            "/login",
+            data={"username": "other-teacher", "password": "a-secure-test-password"},
+        )
+        self.assertEqual(teacher_client.get(download_url).status_code, 403)
 
     def test_calendar_requests_and_timetable_are_managed(self):
         self.sign_in()

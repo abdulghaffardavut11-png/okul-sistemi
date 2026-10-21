@@ -5,16 +5,23 @@
   <div class="admin-grid">
     <section class="portal-card user-form-card">
       <div class="card-heading"><div><span class="card-icon lavender">＋</span><div><h2>{{ 'Create account'|translate(language) }}</h2><p>{{ 'New accounts require a strong password.'|translate(language) }}</p></div></div></div>
-      <form method="post" class="stack user-create-form">
+      <form method="post" class="stack user-create-form" enctype="multipart/form-data" id="user-create-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label for="username">{{ 'Username'|translate(language) }}</label><input id="username" name="username" maxlength="80" required>
-        <label for="email">{{ 'Email (optional)'|translate(language) }}</label><input id="email" name="email" type="email">
+        <label for="email" id="email-label">{{ 'Email (optional)'|translate(language) }}</label><input id="email" name="email" type="email">
         <label for="role">{{ 'Role'|translate(language) }}</label><select id="role" name="role" required>
           <option value="">{{ 'Choose a role'|translate(language) }}</option>{% for role in roles if role != 'super_admin' %}<option value="{{ role }}">{{ role_labels[role]|translate(language) }}</option>{% endfor %}
         </select>
-        <label for="teacher_id">{{ 'Teacher profile (for teachers)'|translate(language) }}</label><select id="teacher_id" name="teacher_id"><option value="">{{ 'Not applicable'|translate(language) }}</option>{% for teacher in teachers %}<option value="{{ teacher.id }}">{{ teacher.name }}</option>{% endfor %}</select>
-        <label for="student_id">{{ 'Student profile (for students/parents)'|translate(language) }}</label><select id="student_id" name="student_id"><option value="">{{ 'Not applicable'|translate(language) }}</option>{% for student in students %}<option value="{{ student.id }}">{{ student.name }} · {{ student.email }}</option>{% endfor %}</select>
-        <fieldset class="class-picker" style="border:1px solid var(--line,#e4e7ec);border-radius:12px;padding:10px 12px;margin:4px 0">
+        <div id="teacher-fields" hidden>
+          <label for="subject">{{ 'Teaching Subject / Branch'|translate(language) }}</label><input id="subject" name="subject">
+          <label for="phone">{{ 'Phone Number'|translate(language) }}</label><input id="phone" name="phone" type="tel">
+          <label for="home_address">{{ 'Home Address'|translate(language) }}</label><textarea id="home_address" name="home_address" rows="2"></textarea>
+          <label for="attachment">{{ 'Attach File (Choose File)'|translate(language) }}</label><input id="attachment" name="attachment" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp">
+        </div>
+        <div id="student-fields" hidden>
+          <p class="muted">{{ 'Use the email on the student record to link this student or parent account. Parents do not need a separate email address.'|translate(language) }}</p>
+        </div>
+        <fieldset id="class-picker" class="class-picker" hidden style="border:1px solid var(--line,#e4e7ec);border-radius:12px;padding:10px 12px;margin:4px 0">
           <legend style="font-weight:700;padding:0 6px">{{ 'Assigned classes (for teachers)'|translate(language) }}</legend>
           <p class="muted" style="margin:0 0 8px;font-size:.82rem">{{ 'Primary school teacher: choose one class. Middle-school subject teacher: choose several (e.g. Grade 5, 6, 7, 8). Teachers only see their own classes.'|translate(language) }}</p>
           <div style="display:flex;flex-wrap:wrap;gap:8px 16px">
@@ -38,13 +45,11 @@
                 <form method="post" action="{{ url_for('views.update_user_role', user_id=account.id) }}" class="role-edit-form">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <select name="role" aria-label="{{ 'Role'|translate(language) }} {{ account.username }}">{% for role in roles if role != 'super_admin' %}<option value="{{ role }}" {% if role == account.role %}selected{% endif %}>{{ role_labels[role]|translate(language) }}</option>{% endfor %}</select>
-                  <select name="teacher_id" aria-label="{{ 'Teacher profile'|translate(language) }}"><option value="">{{ 'Teacher profile'|translate(language) }}</option>{% for teacher in teachers %}<option value="{{ teacher.id }}" {% if teacher.name == account.teacher_name %}selected{% endif %}>{{ teacher.name }}</option>{% endfor %}</select>
-                  <select name="student_id" aria-label="{{ 'Student profile'|translate(language) }}"><option value="">{{ 'Student profile'|translate(language) }}</option>{% for student in students %}<option value="{{ student.id }}" {% if student.name == account.student_name %}selected{% endif %}>{{ student.name }}</option>{% endfor %}</select>
                   <button class="button-small secondary-button" type="submit">{{ 'Update role'|translate(language) }}</button>
                 </form>
               {% else %}{{ role_labels[account.role] }}{% endif %}
             </td>
-            <td>{{ account.teacher_name or account.student_name or '—' }}{% if account.role == 'teacher' and account.teacher_id %}<br><small class="muted">{{ (teacher_classes.get(account.teacher_id) or [])|join(', ') or ('No classes assigned'|translate(language)) }}</small>{% endif %}</td>
+            <td>{{ account.teacher_name or account.student_name or '—' }}{% if account.role == 'teacher' and account.teacher_id %}<br><small class="muted">{{ (teacher_classes.get(account.teacher_id) or [])|join(', ') or ('No classes assigned'|translate(language)) }}</small>{% if account.teacher_attachment %}<br><a href="{{ url_for('views.teacher_attachment', teacher_id=account.teacher_id) }}">{{ 'Download attachment'|translate(language) }}</a>{% endif %}{% endif %}</td>
             <td>{{ ('Active' if account.is_active else 'Inactive')|translate(language) }}</td>
             <td>{% if account.id != session.get('user_id') %}<div class="user-actions"><form method="post" action="{{ url_for('views.user_status', user_id=account.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small secondary-button" type="submit">{{ ('Deactivate' if account.is_active else 'Activate')|translate(language) }}</button></form><form method="post" action="{{ url_for('views.delete_user', user_id=account.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button></form></div>{% else %}<span class="muted">{{ 'Current account'|translate(language) }}</span>{% endif %}</td>
           </tr>{% endfor %}</tbody>
@@ -52,4 +57,31 @@
       {% else %}<div class="card-empty"><p>{{ 'No accounts have been created.'|translate(language) }}</p></div>{% endif %}
     </section>
   </div>
+  <script>
+    (() => {
+      const role = document.getElementById("role");
+      const email = document.getElementById("email");
+      const emailLabel = document.getElementById("email-label");
+      const teacherFields = document.getElementById("teacher-fields");
+      const studentFields = document.getElementById("student-fields");
+      const classPicker = document.getElementById("class-picker");
+      const subject = document.getElementById("subject");
+      function updateRoleFields() {
+        const isTeacher = role.value === "teacher";
+        const isStudentOrParent = role.value === "student" || role.value === "parent";
+        teacherFields.hidden = !isTeacher;
+        studentFields.hidden = !isStudentOrParent;
+        classPicker.hidden = !isTeacher;
+        subject.required = isTeacher;
+        email.required = isTeacher || isStudentOrParent;
+        emailLabel.textContent = isStudentOrParent
+          ? "{{ 'Student / child email (from student record)'|translate(language)|e }}"
+          : isTeacher
+            ? "{{ 'Teacher email (required)'|translate(language)|e }}"
+            : "{{ 'Email (optional)'|translate(language)|e }}";
+      }
+      role.addEventListener("change", updateRoleFields);
+      updateRoleFields();
+    })();
+  </script>
 {% endblock %}

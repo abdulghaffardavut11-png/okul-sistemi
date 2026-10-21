@@ -8,7 +8,9 @@
       <form method="post" class="stack user-create-form" enctype="multipart/form-data" id="user-create-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label for="username">{{ 'Username'|translate(language) }}</label><input id="username" name="username" maxlength="80" required>
-        <label for="email" id="email-label">{{ 'Email (optional)'|translate(language) }}</label><input id="email" name="email" type="email">
+        <div id="email-fields">
+          <label for="email" id="email-label">{{ 'Email (optional)'|translate(language) }}</label><input id="email" name="email" type="email">
+        </div>
         <label for="role">{{ 'Role'|translate(language) }}</label><select id="role" name="role" required>
           <option value="">{{ 'Choose a role'|translate(language) }}</option>{% for role in roles if role != 'super_admin' %}<option value="{{ role }}">{{ role_labels[role]|translate(language) }}</option>{% endfor %}
         </select>
@@ -19,11 +21,15 @@
           <label for="attachment">{{ 'Attach File (Choose File)'|translate(language) }}</label><input id="attachment" name="attachment" type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp">
         </div>
         <div id="student-fields" hidden>
-          <p class="muted">{{ 'Use the email on the student record to link this student or parent account. Parents do not need a separate email address.'|translate(language) }}</p>
+          <label for="student_ids">{{ 'Select student'|translate(language) }}</label>
+          <select id="student_ids" name="student_ids" multiple size="6">
+            {% for student in students %}<option value="{{ student.id }}">{{ student.name }} · {{ student.email }}</option>{% endfor %}
+          </select>
+          <small class="muted">{{ 'Choose one student for a student account, or one or more children for a parent account.'|translate(language) }}</small>
         </div>
         <fieldset id="class-picker" class="class-picker" hidden style="border:1px solid var(--line,#e4e7ec);border-radius:12px;padding:10px 12px;margin:4px 0">
-          <legend style="font-weight:700;padding:0 6px">{{ 'Assigned classes (for teachers)'|translate(language) }}</legend>
-          <p class="muted" style="margin:0 0 8px;font-size:.82rem">{{ 'Primary school teacher: choose one class. Middle-school subject teacher: choose several (e.g. Grade 5, 6, 7, 8). Teachers only see their own classes.'|translate(language) }}</p>
+          <legend style="font-weight:700;padding:0 6px">{{ 'Assigned classes'|translate(language) }}</legend>
+          <p class="muted" style="margin:0 0 8px;font-size:.82rem">{{ 'Select the classes this account is allowed to access. Users can only view students and records in assigned classes.'|translate(language) }}</p>
           <div style="display:flex;flex-wrap:wrap;gap:8px 16px">
             {% for c in class_rows %}<label style="display:inline-flex;gap:6px;align-items:center;font-weight:600"><input type="checkbox" name="class_ids" value="{{ c.id }}"> {{ c.name }}</label>
             {% else %}<span class="muted">{{ 'Create a class before registering a student.'|translate(language) }}</span>{% endfor %}
@@ -49,7 +55,7 @@
                 </form>
               {% else %}{{ role_labels[account.role] }}{% endif %}
             </td>
-            <td>{{ account.teacher_name or account.student_name or '—' }}{% if account.role == 'teacher' and account.teacher_id %}<br><small class="muted">{{ (teacher_classes.get(account.teacher_id) or [])|join(', ') or ('No classes assigned'|translate(language)) }}</small>{% if account.teacher_attachment %}<br><a href="{{ url_for('views.teacher_attachment', teacher_id=account.teacher_id) }}">{{ 'Download attachment'|translate(language) }}</a>{% endif %}{% endif %}</td>
+            <td>{% if account.role == 'parent' %}{{ (linked_students.get(account.id, [])|join(', ')) or account.student_name or '—' }}{% else %}{{ account.teacher_name or account.student_name or '—' }}{% endif %}{% if account.role in class_scoped_roles %}<br><small class="muted">{% if account.role == 'teacher' %}{{ (teacher_classes.get(account.teacher_id) or [])|join(', ') }}{% else %}{{ (user_classes.get(account.id) or [])|join(', ') }}{% endif %}</small>{% endif %}{% if account.role == 'teacher' and account.teacher_id and account.teacher_attachment %}<br><a href="{{ url_for('views.teacher_attachment', teacher_id=account.teacher_id) }}">{{ 'Download attachment'|translate(language) }}</a>{% endif %}</td>
             <td>{{ ('Active' if account.is_active else 'Inactive')|translate(language) }}</td>
             <td>{% if account.id != session.get('user_id') %}<div class="user-actions"><form method="post" action="{{ url_for('views.user_status', user_id=account.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small secondary-button" type="submit">{{ ('Deactivate' if account.is_active else 'Activate')|translate(language) }}</button></form><form method="post" action="{{ url_for('views.delete_user', user_id=account.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button-small danger-button" type="submit">{{ 'Delete'|translate(language) }}</button></form></div>{% else %}<span class="muted">{{ 'Current account'|translate(language) }}</span>{% endif %}</td>
           </tr>{% endfor %}</tbody>
@@ -65,17 +71,27 @@
       const teacherFields = document.getElementById("teacher-fields");
       const studentFields = document.getElementById("student-fields");
       const classPicker = document.getElementById("class-picker");
+      const emailFields = document.getElementById("email-fields");
       const subject = document.getElementById("subject");
+      const studentIds = document.getElementById("student_ids");
+      const classScopedRoles = {{ class_scoped_roles|list|tojson }};
       function updateRoleFields() {
         const isTeacher = role.value === "teacher";
-        const isStudentOrParent = role.value === "student" || role.value === "parent";
+        const isStudent = role.value === "student";
+        const isParent = role.value === "parent";
         teacherFields.hidden = !isTeacher;
-        studentFields.hidden = !isStudentOrParent;
-        classPicker.hidden = !isTeacher;
+        studentFields.hidden = !isParent;
+        classPicker.hidden = !classScopedRoles.includes(role.value);
+        emailFields.hidden = isParent;
+        studentIds.required = isParent;
+        studentIds.multiple = isParent;
+        studentIds.size = isParent ? 6 : 1;
         subject.required = isTeacher;
-        email.required = isTeacher || isStudentOrParent;
-        emailLabel.textContent = isStudentOrParent
+        email.required = isTeacher || isStudent;
+        emailLabel.textContent = isStudent
           ? "{{ 'Student / child email (from student record)'|translate(language)|e }}"
+          : isParent
+            ? "{{ 'Parent email (optional)'|translate(language)|e }}"
           : isTeacher
             ? "{{ 'Teacher email (required)'|translate(language)|e }}"
             : "{{ 'Email (optional)'|translate(language)|e }}";

@@ -173,7 +173,9 @@ def create_app(test_config=None):
                 continue
             elif endpoint in {"views.summer_school", "views.summer_school_archive"} and role not in {"super_admin", "admin"}:
                 continue
-            elif endpoint == "views.timetable" and role not in {"super_admin", "manager", "admin", "teacher"}:
+            elif endpoint == "views.timetable" and role not in {
+                "super_admin", "manager", "admin", "teacher", "head_office", "board"
+            }:
                 continue
             elif endpoint == "views.manage":
                 resource = args[0]
@@ -181,9 +183,13 @@ def create_app(test_config=None):
                     continue
                 if resource == "teachers" and not enabled_modules["teachers"]:
                     continue
-                if role not in {"super_admin", "manager", "admin", "teacher"}:
+                if role not in {
+                    "super_admin", "manager", "admin", "teacher", "head_office", "board"
+                }:
                     continue
-                if role == "teacher" and resource not in {"students", "courses", "grades", "attendance"}:
+                if role in {"teacher", "head_office", "board"} and resource not in {
+                    "students", "courses", "grades", "attendance"
+                }:
                     continue
                 if role in {"student", "parent"}:
                     continue
@@ -212,9 +218,15 @@ def create_app(test_config=None):
                 visible.append(
                     {"label": title, "icon": icon, "endpoint": endpoint, "module": module}
                 )
-            elif endpoint == "views.homework" and role not in {"super_admin", "manager", "admin", "teacher"}:
+            elif endpoint == "views.homework" and role not in {
+                "super_admin", "manager", "admin", "teacher", "head_office", "board"
+            }:
                 continue
-            elif endpoint in {"views.gradebook", "views.attendance_roster", "views.staff_updates"} and role not in {"super_admin", "manager", "admin", "teacher"}:
+            elif endpoint in {"views.gradebook", "views.attendance_roster"} and role not in {
+                "super_admin", "manager", "admin", "teacher", "head_office", "board"
+            }:
+                continue
+            elif endpoint == "views.staff_updates" and role not in {"super_admin", "manager", "admin", "teacher"}:
                 continue
             else:
                 visible.append(
@@ -281,6 +293,7 @@ def create_app(test_config=None):
                 "teacher": "Teacher", "student": "Student", "parent": "Parent",
                 "health_officer": "Health Officer",
                 "boarding_master": "Boarding Master",
+                "head_office": "Head Office", "board": "Board",
             }.get(role, "Guest"),
             "current_year": date.today().year,
             "academic_year": configured_academic_year,

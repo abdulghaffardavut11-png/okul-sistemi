@@ -17,6 +17,8 @@ ROLES = (
     "parent",
     "health_officer",
     "boarding_master",
+    "head_office",
+    "board",
 )
 
 
@@ -29,7 +31,9 @@ def login():
             "SELECT u.id, u.username, u.email, u.password_hash, u.role, u.is_active "
             "FROM users u WHERE u.username = ? OR lower(u.email) = lower(?) "
             "OR (u.role IN ('student', 'parent') AND EXISTS ("
-            "SELECT 1 FROM students s WHERE s.id=u.student_id AND lower(s.email)=lower(?))) "
+            "SELECT 1 FROM students s WHERE "
+            "(s.id=u.student_id OR EXISTS (SELECT 1 FROM user_students us "
+            "WHERE us.user_id=u.id AND us.student_id=s.id)) AND lower(s.email)=lower(?))) "
             "ORDER BY CASE WHEN u.username=? THEN 0 ELSE 1 END",
             (identity, identity, identity, identity),
         ).fetchall()

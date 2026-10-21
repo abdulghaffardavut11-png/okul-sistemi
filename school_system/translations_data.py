@@ -256,6 +256,17 @@ TR_EXTRA = {
     "Teacher email (required)": "Öğretmen e-postası (zorunlu)",
     "Teaching Subject / Branch": "Öğretim alanı / branş",
     "Use the email on the student record to link this student or parent account. Parents do not need a separate email address.": "Öğrenci veya veli hesabını bağlamak için öğrenci kaydındaki e-posta adresini kullanın. Velilerin ayrı bir e-posta adresine ihtiyacı yoktur.",
+    "Choose one student for a student account, or one or more children for a parent account.": "Öğrenci hesabı için bir öğrenci, veli hesabı için bir veya daha fazla çocuk seçin.",
+    "One or more selected students are invalid.": "Seçilen öğrencilerden biri veya daha fazlası geçersiz.",
+    "One or more selected students do not exist.": "Seçilen öğrencilerden biri veya daha fazlası mevcut değil.",
+    "Parent email (optional)": "Veli e-postası (isteğe bağlı)",
+    "Select a child": "Çocuk seçin",
+    "Select at least one child for the parent account.": "Veli hesabı için en az bir çocuk seçin.",
+    "Select at least one class for this account.": "Bu hesap için en az bir sınıf seçin.",
+    "Select student": "Öğrenci seçin",
+    "Select the classes this account is allowed to access. Users can only view students and records in assigned classes.": "Bu hesabın erişebileceği sınıfları seçin. Kullanıcılar yalnızca atanmış sınıflardaki öğrencileri ve kayıtları görebilir.",
+    "Head Office": "Merkez Ofis",
+    "Board": "Yönetim Kurulu",
 }
 
 # French: a small, carefully checked core (everything else falls back to English until

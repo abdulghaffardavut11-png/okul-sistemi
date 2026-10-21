@@ -225,7 +225,7 @@ CREATE TABLE users (
     role TEXT NOT NULL DEFAULT 'manager'
       CHECK (role IN (
         'super_admin', 'admin', 'manager', 'teacher', 'student', 'parent',
-        'health_officer', 'boarding_master'
+        'health_officer', 'boarding_master', 'head_office', 'board'
       )),
     email TEXT UNIQUE,
     teacher_id INTEGER REFERENCES teachers(id) ON DELETE CASCADE,
@@ -263,6 +263,8 @@ def _migrate_users(db):
         and "'admin'" in table_sql
         and "'health_officer'" in table_sql
         and "'boarding_master'" in table_sql
+        and "'head_office'" in table_sql
+        and "'board'" in table_sql
     ):
         return
 
@@ -278,12 +280,12 @@ def _migrate_users(db):
         (
             "CASE WHEN role='admin' THEN 'super_admin' "
             "WHEN role IN ('super_admin','manager','teacher','student','parent',"
-            "'health_officer','boarding_master') "
+            "'health_officer','boarding_master','head_office','board') "
             "THEN role ELSE 'manager' END"
             if legacy_admin_is_root
             else "CASE WHEN role IN "
             "('super_admin','admin','manager','teacher','student','parent',"
-            "'health_officer','boarding_master') "
+            "'health_officer','boarding_master','head_office','board') "
             "THEN role ELSE 'manager' END"
         )
         if "role" in old_columns
@@ -356,11 +358,21 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'manager' CHECK (role IN ('super_admin', 'admin', 'manager', 'teacher', 'student', 'parent', 'health_officer', 'boarding_master')),
+            role TEXT NOT NULL DEFAULT 'manager' CHECK (role IN ('super_admin', 'admin', 'manager', 'teacher', 'student', 'parent', 'health_officer', 'boarding_master', 'head_office', 'board')),
             email TEXT UNIQUE,
             teacher_id INTEGER REFERENCES teachers(id) ON DELETE CASCADE,
             student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
             is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
+        );
+        CREATE TABLE IF NOT EXISTS user_class_access (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            course_id INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+            PRIMARY KEY (user_id, course_id)
+        );
+        CREATE TABLE IF NOT EXISTS user_students (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+            PRIMARY KEY (user_id, student_id)
         );
         """
     )
@@ -409,6 +421,20 @@ def init_db():
     _add_columns(db, "announcements", {"created_by": "INTEGER"})
     # "class": a class teacher with ONE class (primary school) · "subject": several classes (middle school)
     _add_columns(db, "teachers", {"teaching_level": "TEXT NOT NULL DEFAULT 'subject'"})
+    db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS user_class_access (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            course_id INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+            PRIMARY KEY (user_id, course_id)
+        );
+        CREATE TABLE IF NOT EXISTS user_students (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+            PRIMARY KEY (user_id, student_id)
+        );
+        """
+    )
     _add_columns(
         db,
         "announcements",
@@ -480,6 +506,9 @@ def init_db():
     )
     # "Export Students (CSV)" left the side menu: every list now has its own Export button.
     db.execute("DELETE FROM navigation_items WHERE url_endpoint='views.export_students'")
+    db.execute(
+        "DELETE FROM navigation_items WHERE url_endpoint='views.manage' AND route_arg='teachers'"
+    )
     db.commit()
     current_app.teardown_appcontext(close_db)
 

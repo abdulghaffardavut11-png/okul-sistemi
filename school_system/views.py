@@ -272,7 +272,6 @@ PORTAL_GROUPS = [
         ("Enrollments", "enrollments", "views.manage", "enrollments"),
     ]),
     ("Institutional Operations", [
-        ("Teachers", "teachers", "views.manage", "teachers"),
         ("Orders", "orders", "views.portal", "orders"),
         ("Appointments & Calendar", "appointments", "views.portal", "appointments"),
         ("Bulk SMS", "bulk-sms", "views.portal", "bulk-sms"),
@@ -322,6 +321,8 @@ ROLE_LABELS = {
     "parent": "Parent",
     "health_officer": "Health Officer",
     "boarding_master": "Boarding Master",
+    "head_office": "Head Office",
+    "board": "Board",
 }
 
 TRANSLATIONS = {
@@ -1063,13 +1064,22 @@ def profile_image(filename):
         owner = db.execute(
             "SELECT id FROM students WHERE profile_picture=?", (filename,)
         ).fetchone()
-        allowed = bool(owner) and user["role"] in {"super_admin", "admin", "manager"}
+        allowed = bool(owner) and user["role"] == "super_admin"
         if owner and user["role"] == "teacher":
             allowed = bool(
                 db.execute(
                     "SELECT 1 FROM enrollments e JOIN courses c ON c.id=e.course_id "
                     "WHERE e.student_id=? AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?) LIMIT 1",
                     (owner["id"], user["teacher_id"]),
+                ).fetchone()
+            )
+        elif owner and user["role"] in CLASS_SCOPED_ROLES:
+            course_ids = sorted(_assigned_course_ids(db, user))
+            allowed = bool(course_ids) and bool(
+                db.execute(
+                    "SELECT 1 FROM enrollments WHERE student_id=? AND course_id IN ("
+                    + ",".join("?" for _ in course_ids) + ") LIMIT 1",
+                    (owner["id"], *course_ids),
                 ).fetchone()
             )
         elif owner and user["role"] in {"student", "parent"}:
@@ -1085,53 +1095,132 @@ def profile_image(filename):
 
 
 def _current_user():
-    return get_db().execute(
+    db = get_db()
+    row = db.execute(
         "SELECT u.*, t.name AS teacher_name, t.profile_picture AS teacher_picture, "
         "s.name AS student_name, s.profile_picture AS student_picture "
         "FROM users u LEFT JOIN teachers t ON t.id=u.teacher_id "
         "LEFT JOIN students s ON s.id=u.student_id WHERE u.id = ?",
         (session["user_id"],),
     ).fetchone()
+    if row is None:
+        return row
+    user = dict(row)
+    if user["role"] == "parent":
+        linked_ids = _linked_student_ids(db, user)
+        if linked_ids:
+            selected = _optional_int(session.get("active_student_id"))
+            if selected not in linked_ids:
+                selected = min(linked_ids)
+                session["active_student_id"] = selected
+            user["student_id"] = selected
+            student = db.execute(
+                "SELECT name,profile_picture FROM students WHERE id=?", (selected,)
+            ).fetchone()
+            user["student_name"] = student["name"]
+            user["student_picture"] = student["profile_picture"]
+    return user
 
 
 def _teacher_course_filter(user, query):
-    if user["role"] == "teacher":
+    if user["role"] in CLASS_SCOPED_ROLES:
+        course_ids = sorted(_assigned_course_ids(get_db(), user))
+        if not course_ids:
+            return query.replace(" ORDER BY", " WHERE 0 ORDER BY", 1), ()
+        marks = ",".join("?" for _ in course_ids)
         if "FROM students ORDER BY" in query:
             return query.replace(
                 " ORDER BY",
-                " WHERE id IN (SELECT e.student_id FROM enrollments e "
-                "JOIN courses c ON c.id=e.course_id WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)) ORDER BY",
-            ), (user["teacher_id"],)
-        return query.replace(" ORDER BY", " WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?) ORDER BY"), (user["teacher_id"],)
+                f" WHERE id IN (SELECT e.student_id FROM enrollments e WHERE e.course_id IN ({marks})) ORDER BY",
+            ), tuple(course_ids)
+        return query.replace(
+            " ORDER BY", f" WHERE c.id IN ({marks}) ORDER BY", 1
+        ), tuple(course_ids)
     return query, ()
 
 
+CLASS_SCOPED_ROLES = ("manager", "admin", "teacher", "head_office", "board")
 STAFF_ROLES = ("super_admin", "manager", "admin", "teacher")
 ACADEMIC_WRITE_ROLES = ("super_admin", "manager", "admin", "teacher")
+CLASS_VIEW_ROLES = ("head_office", "board")
+ACADEMIC_ACCESS_ROLES = (*ACADEMIC_WRITE_ROLES, *CLASS_VIEW_ROLES)
+
+
+def _assigned_course_ids(db, user):
+    if user["role"] == "teacher":
+        if not user["teacher_id"]:
+            return set()
+        return _teacher_class_ids(db, user["teacher_id"])
+    return {
+        row["course_id"]
+        for row in db.execute(
+            "SELECT course_id FROM user_class_access WHERE user_id=?",
+            (user["id"],),
+        ).fetchall()
+    }
+
+
+def _linked_student_ids(db, user):
+    if user["role"] == "student":
+        return {user["student_id"]} if user["student_id"] else set()
+    if user["role"] == "parent":
+        ids = {
+            row["student_id"]
+            for row in db.execute(
+                "SELECT student_id FROM user_students WHERE user_id=?",
+                (user["id"],),
+            ).fetchall()
+        }
+        if user["student_id"]:
+            ids.add(user["student_id"])
+        return ids
+    return set()
 
 
 def _course_scope(user):
-    if user["role"] == "teacher":
-        if not user["teacher_id"]:
+    if user["role"] in CLASS_SCOPED_ROLES:
+        db = get_db()
+        if user["role"] == "teacher" and not user["teacher_id"]:
             abort(403)
-        return " AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)", (user["teacher_id"],)
-    if user["role"] in {"super_admin", "manager", "admin"}:
+        course_ids = sorted(_assigned_course_ids(db, user))
+        if not course_ids:
+            return " AND 0", ()
+        return (
+            " AND c.id IN (" + ",".join("?" for _ in course_ids) + ")",
+            tuple(course_ids),
+        )
+    if user["role"] == "super_admin":
         return "", ()
     abort(403)
 
 
 def _student_scope(user):
-    if user["role"] == "teacher":
-        if not user["teacher_id"]:
+    if user["role"] in CLASS_SCOPED_ROLES:
+        db = get_db()
+        if user["role"] == "teacher" and not user["teacher_id"]:
             abort(403)
+        course_ids = sorted(_assigned_course_ids(db, user))
+        if not course_ids:
+            return " AND 0", ()
+        marks = ",".join("?" for _ in course_ids)
         return (
-            " AND e.student_id IN (SELECT e2.student_id FROM enrollments e2 "
-            "JOIN courses c2 ON c2.id=e2.course_id WHERE c2.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?))",
-            (user["teacher_id"],),
+            f" AND e.student_id IN (SELECT e2.student_id FROM enrollments e2 WHERE e2.course_id IN ({marks}))",
+            tuple(course_ids),
         )
-    if user["role"] in {"super_admin", "manager", "admin"}:
+    if user["role"] == "super_admin":
         return "", ()
     abort(403)
+
+
+@bp.post("/parent/select-child")
+@roles_required("parent")
+def select_parent_child():
+    user = _current_user()
+    student_id = _optional_int(request.form.get("student_id"))
+    if student_id not in _linked_student_ids(get_db(), user):
+        abort(403)
+    session["active_student_id"] = student_id
+    return redirect(url_for("views.dashboard"))
 
 
 @bp.get("/")
@@ -1143,6 +1232,17 @@ def dashboard():
     if user["role"] in ("student", "parent"):
         if user["student_id"] is None:
             abort(403)
+        children = []
+        if user["role"] == "parent":
+            children = db.execute(
+                "SELECT s.id,s.name FROM user_students us JOIN students s "
+                "ON s.id=us.student_id WHERE us.user_id=? ORDER BY s.name",
+                (user["id"],),
+            ).fetchall()
+            if not children and user["student_id"]:
+                children = db.execute(
+                    "SELECT id,name FROM students WHERE id=?", (user["student_id"],)
+                ).fetchall()
         student = db.execute(
             "SELECT * FROM students WHERE id = ?", (user["student_id"],)
         ).fetchone()
@@ -1205,6 +1305,7 @@ def dashboard():
             hidden=_hidden_blocks(db),
             birth_display=_show_date(student["date_of_birth"]),
             custom_blocks=_dashboard_custom_blocks(db, user["role"]),
+            children=children,
         )
 
     teacher_courses = []
@@ -2395,7 +2496,7 @@ def export_resource(resource):
 
 
 @bp.get("/export/gradebook")
-@roles_required(*ACADEMIC_WRITE_ROLES)
+@roles_required(*ACADEMIC_ACCESS_ROLES)
 def export_gradebook():
     db = get_db()
     user = _current_user()
@@ -2412,7 +2513,7 @@ def export_gradebook():
         if not db.execute(
             "SELECT 1 FROM courses c WHERE c.id=?" + scope, [course_id, *params]
         ).fetchone():
-            abort(403 if user["role"] == "teacher" else 404)
+            abort(403 if user["role"] in CLASS_SCOPED_ROLES else 404)
         query += " AND c.id=?"
         params.append(course_id)
     rows = db.execute(query + " ORDER BY c.name,g.graded_on,g.exam_name,s.name", params).fetchall()
@@ -2421,7 +2522,7 @@ def export_gradebook():
 
 
 @bp.get("/export/attendance")
-@roles_required(*ACADEMIC_WRITE_ROLES)
+@roles_required(*ACADEMIC_ACCESS_ROLES)
 def export_attendance():
     _require_module("attendance")
     db = get_db()
@@ -2452,7 +2553,7 @@ def export_attendance():
             "SELECT 1 FROM courses c WHERE c.id=?" + scope,
             [course_id, *_course_scope(user)[1]],
         ).fetchone():
-            abort(403 if user["role"] == "teacher" else 404)
+            abort(403 if user["role"] in CLASS_SCOPED_ROLES else 404)
         query += " AND c.id=?"
         params.append(course_id)
     rows = db.execute(query + " ORDER BY c.name,s.name", params).fetchall()
@@ -2467,27 +2568,29 @@ def export_attendance():
 def _own_student_id_or_scope(db, user, student_id):
     """Authorise exports of one student; returns a course filter for teachers."""
     role = user["role"]
-    if role in {"super_admin", "manager", "admin"}:
+    if role == "super_admin":
         return "", ()
+    if role in CLASS_SCOPED_ROLES:
+        course_ids = sorted(_assigned_course_ids(db, user))
+        if not course_ids or not db.execute(
+            "SELECT 1 FROM enrollments WHERE student_id=? AND course_id IN ("
+            + ",".join("?" for _ in course_ids) + ") LIMIT 1",
+            (student_id, *course_ids),
+        ).fetchone():
+            abort(403)
+        return (
+            " AND c.id IN (" + ",".join("?" for _ in course_ids) + ")",
+            tuple(course_ids),
+        )
     if role in {"student", "parent"}:
         if not user["student_id"] or user["student_id"] != student_id:
             abort(403)
         return "", ()
-    if role == "teacher":
-        if not user["teacher_id"]:
-            abort(403)
-        if not db.execute(
-            "SELECT 1 FROM enrollments e JOIN courses c ON c.id=e.course_id "
-            "WHERE e.student_id=? AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)",
-            (student_id, user["teacher_id"]),
-        ).fetchone():
-            abort(403)
-        return " AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)", (user["teacher_id"],)
     abort(403)
 
 
 @bp.get("/export/student/<int:student_id>")
-@roles_required(*STAFF_ROLES, "student", "parent")
+@roles_required(*STAFF_ROLES, *CLASS_VIEW_ROLES, "student", "parent")
 def export_student_full(student_id):
     """One workbook with a student's profile, exams, attendance and homework.
 
@@ -2540,7 +2643,7 @@ def export_student_full(student_id):
 
 
 @bp.get("/export/homework")
-@roles_required(*STAFF_ROLES, "student", "parent")
+@roles_required(*STAFF_ROLES, *CLASS_VIEW_ROLES, "student", "parent")
 def export_homework():
     db = get_db()
     user = _current_user()
@@ -2564,7 +2667,7 @@ def export_homework():
 
 
 @bp.get("/export/timetable")
-@roles_required(*STAFF_ROLES, "student", "parent")
+@roles_required(*STAFF_ROLES, *CLASS_VIEW_ROLES, "student", "parent")
 def export_timetable():
     db = get_db()
     user = _current_user()
@@ -2761,6 +2864,13 @@ def users():
         home_address = request.form.get("home_address", "").strip()
         student_id = None
         teacher_id = None
+        selected_student_ids = {
+            student_id
+            for student_id in (
+                _optional_int(value) for value in request.form.getlist("student_ids")
+            )
+            if student_id
+        }
         attachment = ""
         saved_attachment = ""
         raw_class_ids = request.form.getlist("class_ids")
@@ -2780,28 +2890,44 @@ def users():
             "SELECT 1 FROM teachers WHERE lower(email)=lower(?)", (email,)
         ).fetchone():
             flash("A teacher profile already uses this email. Use a different email address.", "error")
-        elif role in ("student", "parent") and not email:
+        elif role == "student" and not email:
             flash("Enter the email address from the student's record.", "error")
-        elif role in ("student", "parent") and not (
+        elif role == "student" and not (
             student := db.execute(
                 "SELECT id FROM students WHERE lower(email)=lower(?)", (email,)
             ).fetchone()
         ):
             flash("No student record matches that email address.", "error")
-        elif role == "teacher" and any(
+        elif role == "parent" and not selected_student_ids:
+            flash("Select at least one child for the parent account.", "error")
+        elif role == "parent" and len(selected_student_ids) != len(request.form.getlist("student_ids")):
+            flash("One or more selected students are invalid.", "error")
+        elif role == "parent" and any(
+            not db.execute("SELECT 1 FROM students WHERE id=?", (linked_id,)).fetchone()
+            for linked_id in selected_student_ids
+        ):
+            flash("One or more selected students do not exist.", "error")
+        elif role in CLASS_SCOPED_ROLES and any(
             class_id is None or class_id <= 0 for class_id in parsed_class_ids
         ):
             flash("One or more selected classes are invalid.", "error")
-        elif role == "teacher" and selected_class_ids and any(
+        elif role in CLASS_SCOPED_ROLES and not selected_class_ids and not (
+            role == "teacher" and teacher_id and _teacher_class_ids(db, teacher_id)
+        ):
+            flash("Select at least one class for this account.", "error")
+        elif role in CLASS_SCOPED_ROLES and selected_class_ids and any(
             not db.execute("SELECT 1 FROM courses WHERE id=?", (class_id,)).fetchone()
             for class_id in selected_class_ids
         ):
             flash("One or more selected classes do not exist.", "error")
         else:
-            if role in ("student", "parent"):
+            if role == "student":
                 student_id = student["id"]
                 email = None
-            elif role == "teacher":
+            elif role == "parent":
+                student_id = min(selected_student_ids)
+                email = None
+            if role == "teacher":
                 uploaded_file = request.files.get("attachment")
                 if uploaded_file and uploaded_file.filename:
                     try:
@@ -2818,7 +2944,7 @@ def users():
                         "VALUES (?,?,?,?,?,?)",
                         (username, email, subject, phone, home_address, attachment),
                     ).lastrowid
-                db.execute(
+                account_id = db.execute(
                     "INSERT INTO users (username, email, password_hash, role, teacher_id, student_id) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     (
@@ -2826,9 +2952,22 @@ def users():
                         generate_password_hash(password, method="pbkdf2:sha256"),
                         role, teacher_id, student_id,
                     )
-                )
+                ).lastrowid
                 if role == "teacher":
                     _set_teacher_classes(db, teacher_id, selected_class_ids)
+                elif role in CLASS_SCOPED_ROLES:
+                    db.executemany(
+                        "INSERT INTO user_class_access (user_id,course_id) VALUES (?,?)",
+                        [(account_id, course_id) for course_id in selected_class_ids],
+                    )
+                if role in {"student", "parent"}:
+                    linked_ids = (
+                        selected_student_ids if role == "parent" else {student_id}
+                    )
+                    db.executemany(
+                        "INSERT INTO user_students (user_id,student_id) VALUES (?,?)",
+                        [(account_id, linked_id) for linked_id in linked_ids],
+                    )
                 db.commit()
                 flash("User account created.", "success")
                 return redirect(url_for("views.users"))
@@ -2848,15 +2987,30 @@ def users():
         "LEFT JOIN students s ON s.id=u.student_id ORDER BY u.id"
     ).fetchall()
     class_rows = _sort_by_name(db.execute("SELECT id,name FROM courses").fetchall())
+    students = db.execute("SELECT id,name,email FROM students ORDER BY name").fetchall()
+    linked_students = {}
+    for link in db.execute(
+        "SELECT us.user_id,s.name FROM user_students us "
+        "JOIN students s ON s.id=us.student_id ORDER BY s.name"
+    ).fetchall():
+        linked_students.setdefault(link["user_id"], []).append(link["name"])
     teacher_classes = {}
     for course_id, people in _class_teacher_map(db).items():
         name = next(c["name"] for c in class_rows if c["id"] == course_id)
         for teacher_id, _, _ in people:
             teacher_classes.setdefault(teacher_id, []).append(name)
     teacher_classes = {k: sorted(v, key=_natural_key) for k, v in teacher_classes.items()}
+    user_classes = {}
+    for row in db.execute(
+        "SELECT uca.user_id,c.name FROM user_class_access uca "
+        "JOIN courses c ON c.id=uca.course_id ORDER BY c.name"
+    ).fetchall():
+        user_classes.setdefault(row["user_id"], []).append(row["name"])
     return render_template(
         "users.html", accounts=accounts, roles=ROLES, role_labels=ROLE_LABELS,
-        class_rows=class_rows, teacher_classes=teacher_classes,
+        class_rows=class_rows, teacher_classes=teacher_classes, students=students,
+        linked_students=linked_students, class_scoped_roles=CLASS_SCOPED_ROLES,
+        user_classes=user_classes,
     )
 
 
@@ -3663,6 +3817,7 @@ def _save_attendance_students(db, students, attendance_date):
 @roles_required("super_admin", "manager", "admin")
 def student_registration():
     db = get_db()
+    user = _current_user()
     errors = []
     values = {
         "name": request.form.get("name", "").strip(),
@@ -3676,9 +3831,11 @@ def student_registration():
         "father_occupation": request.form.get("father_occupation", "").strip(),
         "mother_occupation": request.form.get("mother_occupation", "").strip(),
     }
-    courses = _sort_by_name(
-        db.execute("SELECT id,name,code FROM courses").fetchall()
-    )
+    course_scope, course_params = _course_scope(user) if user["role"] in CLASS_SCOPED_ROLES else ("", ())
+    courses = _sort_by_name(db.execute(
+        "SELECT c.id,c.name,c.code FROM courses c WHERE 1=1" + course_scope,
+        course_params,
+    ).fetchall())
     _sync_class_enrollments(db)
     academic_year_row = db.execute(
         "SELECT value FROM settings WHERE key='academic_year'"
@@ -3709,11 +3866,20 @@ def student_registration():
         enrolled_names.setdefault(row["student_id"], []).append(row["name"])
     registered_students = []
     wanted_key = _class_key(registered_course["name"]) if registered_course else None
-    for student in db.execute(
+    student_query = (
         "SELECT s.id,s.name,s.email,s.grade_level,s.father_name,s.father_phone,"
         "s.father_occupation,s.mother_name,s.mother_phone,s.mother_occupation,"
         "s.home_address,s.profile_picture,s.date_of_birth,s.place_of_birth FROM students s"
-    ).fetchall():
+    )
+    student_params = ()
+    if user["role"] in CLASS_SCOPED_ROLES:
+        class_ids = [course["id"] for course in courses]
+        if class_ids:
+            student_query += " WHERE s.id IN (SELECT student_id FROM enrollments WHERE course_id IN (" + ",".join("?" for _ in class_ids) + "))"
+            student_params = tuple(class_ids)
+        else:
+            student_query += " WHERE 0"
+    for student in db.execute(student_query, student_params).fetchall():
         names = sorted(enrolled_names.get(student["id"], []), key=_natural_key)
         keys = {_class_key(n) for n in names}
         if student["grade_level"]:
@@ -3788,7 +3954,9 @@ def student_registration():
             errors.append("Place of birth must be 120 characters or fewer.")
         new_class_name = values["class_name"]
         if new_class_name:
-            if len(new_class_name) > 120:
+            if user["role"] in CLASS_SCOPED_ROLES:
+                errors.append("Choose one of your assigned classes.")
+            elif len(new_class_name) > 120:
                 errors.append("Class name must contain 1–120 characters.")
             else:
                 values["course_id"] = ""
@@ -3871,7 +4039,7 @@ def student_registration():
 
 
 @bp.route("/attendance", methods=("GET", "POST"))
-@roles_required(*ACADEMIC_WRITE_ROLES)
+@roles_required(*ACADEMIC_ACCESS_ROLES)
 def attendance_roster():
     _require_module("attendance")
     db = get_db()
@@ -3901,7 +4069,7 @@ def attendance_roster():
         attendance_date = date.today().isoformat()
     selected_course = next((course for course in courses if course["id"] == course_id), None)
     if course_id and selected_course is None:
-        abort(403 if user["role"] == "teacher" else 404)
+        abort(403 if user["role"] in CLASS_SCOPED_ROLES else 404)
 
     students = (
         _load_attendance_students(db, course_id, attendance_date)
@@ -3909,6 +4077,8 @@ def attendance_roster():
     )
 
     if request.method == "POST":
+        if user["role"] in CLASS_VIEW_ROLES:
+            abort(403)
         if not selected_course:
             abort(400)
         if not _valid_date(attendance_date):
@@ -3932,7 +4102,7 @@ def attendance_roster():
 
 
 @bp.route("/gradebook", methods=("GET", "POST"))
-@roles_required(*ACADEMIC_WRITE_ROLES)
+@roles_required(*ACADEMIC_ACCESS_ROLES)
 def gradebook():
     _require_module("gradebook")
     db = get_db()
@@ -3949,8 +4119,10 @@ def gradebook():
     graded_on = request.values.get("graded_on", date.today().isoformat()).strip()
     selected_course = next((course for course in courses if course["id"] == course_id), None)
     if course_id and selected_course is None:
-        abort(403 if user["role"] == "teacher" else 404)
+        abort(403 if user["role"] in CLASS_SCOPED_ROLES else 404)
     if request.method == "POST":
+        if user["role"] in CLASS_VIEW_ROLES:
+            abort(403)
         if not selected_course:
             abort(400)
         if not exam_name or len(exam_name) > 100 or not _valid_date(graded_on):
@@ -4023,6 +4195,7 @@ def gradebook():
         exam_name=exam_name,
         graded_on=graded_on,
         students=rows,
+        editable=user["role"] in ACADEMIC_WRITE_ROLES,
     )
 
 
@@ -4167,6 +4340,8 @@ def _resource_allowed(role):
         "admin": set(RESOURCES),
         "manager": set(RESOURCES),
         "teacher": {"students", "courses", "grades", "attendance"},
+        "head_office": {"students", "courses", "grades", "attendance"},
+        "board": {"students", "courses", "grades", "attendance"},
     }.get(role, set())
 
 
@@ -4175,19 +4350,37 @@ def _resource_records(db, resource, user):
     definition = RESOURCES[resource]
     query = definition["select"]
     params = ()
-    if user["role"] == "teacher":
-        if not user["teacher_id"]:
+    if user["role"] in CLASS_SCOPED_ROLES and resource in {
+        "students", "courses", "enrollments", "grades", "attendance"
+    }:
+        course_ids = sorted(_assigned_course_ids(db, user))
+        if user["role"] == "teacher" and not user["teacher_id"]:
             abort(403)
-        if resource == "students":
+        if not course_ids:
+            query = query.replace(" ORDER BY", " WHERE 0 ORDER BY", 1)
+        elif resource == "students":
             query = (
                 "SELECT DISTINCT s.id,s.name,s.grade_level,"
                 "CASE WHEN s.gender IN ('Male','Female') THEN s.gender ELSE '' END AS gender "
                 "FROM students s JOIN enrollments e ON e.student_id=s.id "
-                "JOIN courses c ON c.id=e.course_id WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?) ORDER BY s.name"
+                "WHERE e.course_id IN (" + ",".join("?" for _ in course_ids) + ") "
+                "ORDER BY s.name"
             )
-            params = (user["teacher_id"],)
-        else:
-            query, params = _teacher_course_filter(user, query)
+            params = tuple(course_ids)
+        elif resource == "courses":
+            query = query.replace(
+                " ORDER BY",
+                " WHERE c.id IN (" + ",".join("?" for _ in course_ids) + ") ORDER BY",
+                1,
+            )
+            params = tuple(course_ids)
+        elif resource in {"enrollments", "grades", "attendance"}:
+            query = query.replace(
+                " ORDER BY",
+                " WHERE c.id IN (" + ",".join("?" for _ in course_ids) + ") ORDER BY",
+                1,
+            )
+            params = tuple(course_ids)
     return db.execute(query, params).fetchall()
 
 
@@ -4204,6 +4397,8 @@ def manage(resource):
         "admin": set(RESOURCES),
         "manager": set(RESOURCES),
         "teacher": {"students", "courses", "grades", "attendance"},
+        "head_office": {"students", "courses", "grades", "attendance"},
+        "board": {"students", "courses", "grades", "attendance"},
     }.get(role, set())
     if resource not in allowed:
         abort(403)
@@ -4225,6 +4420,8 @@ def manage(resource):
         else role in {"super_admin", "manager", "admin"}
         or role == "teacher" and resource in {"grades", "attendance"}
     )
+    if role in {"head_office", "board"}:
+        editable = False
     if request.method == "POST" and not editable:
         abort(403)
     editing_id = request.args.get("edit", type=int)
@@ -4234,12 +4431,25 @@ def manage(resource):
             abort(403)
         editing_query = f"SELECT * FROM {definition['table']} WHERE id = ?"
         params = [editing_id]
-        if role == "teacher" and resource in {"grades", "attendance"}:
+        if role in CLASS_SCOPED_ROLES and resource == "students":
+            course_ids = sorted(_assigned_course_ids(db, user))
+            if not course_ids:
+                abort(404)
+            editing_query += (
+                " AND id IN (SELECT student_id FROM enrollments WHERE course_id IN ("
+                + ",".join("?" for _ in course_ids) + "))"
+            )
+            params.extend(course_ids)
+        elif role in CLASS_SCOPED_ROLES and resource in {"grades", "attendance"}:
+            course_ids = sorted(_assigned_course_ids(db, user))
+            if not course_ids:
+                abort(404)
             editing_query += (
                 " AND EXISTS (SELECT 1 FROM enrollments e JOIN courses c "
-                "ON c.id=e.course_id WHERE e.id=enrollment_id AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?))"
+                "ON c.id=e.course_id WHERE e.id=enrollment_id AND c.id IN ("
+                + ",".join("?" for _ in course_ids) + "))"
             )
-            params.append(user["teacher_id"])
+            params.extend(course_ids)
         editing = db.execute(editing_query, params).fetchone()
         if editing is None:
             abort(404)
@@ -4264,7 +4474,7 @@ def manage(resource):
             if values is None:
                 query = definition["select"]
                 params = ()
-                if role == "teacher":
+                if role in CLASS_SCOPED_ROLES:
                     query, params = _teacher_course_filter(user, query)
                 records = db.execute(query, params).fetchall()
                 form_fields = _form_fields(definition, dict(editing or {}), role, user)
@@ -4277,10 +4487,29 @@ def manage(resource):
                 if editing_id is None:
                     placeholders = ", ".join("?" for _ in fields)
                     columns = ", ".join(fields)
-                    db.execute(
+                    cursor = db.execute(
                         f"INSERT INTO {definition['table']} ({columns}) VALUES ({placeholders})",
                         [values[field] for field in fields],
                     )
+                    if resource == "students" and role in CLASS_SCOPED_ROLES:
+                        course = db.execute(
+                            "SELECT id FROM courses WHERE name=? AND id IN ("
+                            + ",".join("?" for _ in _assigned_course_ids(db, user))
+                            + ")",
+                            (values["grade_level"], *_assigned_course_ids(db, user)),
+                        ).fetchone()
+                        year = db.execute(
+                            "SELECT value FROM settings WHERE key='academic_year'"
+                        ).fetchone()
+                        db.execute(
+                            "INSERT INTO enrollments(student_id,course_id,academic_year) "
+                            "VALUES (?,?,?)",
+                            (
+                                cursor.lastrowid,
+                                course["id"],
+                                year["value"] if year else "2026-2027",
+                            ),
+                        )
                     flash(f"{definition['singular'].capitalize()} added.", "success")
                 else:
                     assignments = ", ".join(f"{field} = ?" for field in fields)
@@ -4331,6 +4560,32 @@ def delete_record(resource, record_id):
             abort(403)
         if user["role"] == "admin" and resource not in {"grades", "attendance"}:
             abort(403)
+        if user["role"] in CLASS_SCOPED_ROLES and resource in {
+            "students", "enrollments", "grades", "attendance"
+        }:
+            course_ids = sorted(_assigned_course_ids(db, user))
+            if not course_ids:
+                abort(404)
+            relation = {
+                "students": "id",
+                "enrollments": "course_id",
+                "grades": "(SELECT course_id FROM enrollments WHERE id=enrollment_id)",
+                "attendance": "(SELECT course_id FROM enrollments WHERE id=enrollment_id)",
+            }[resource]
+            if resource == "students":
+                allowed = db.execute(
+                    "SELECT 1 FROM enrollments WHERE student_id=? AND course_id IN ("
+                    + ",".join("?" for _ in course_ids) + ") LIMIT 1",
+                    (record_id, *course_ids),
+                ).fetchone()
+            else:
+                allowed = db.execute(
+                    f"SELECT 1 FROM {definition['table']} WHERE id=? AND {relation} IN ("
+                    + ",".join("?" for _ in course_ids) + ")",
+                    (record_id, *course_ids),
+                ).fetchone()
+            if not allowed:
+                abort(404)
         if resource == "courses":
             dependencies = db.execute(
                 "SELECT "
@@ -4367,7 +4622,7 @@ def delete_record(resource, record_id):
 
 
 @bp.route("/homework", methods=("GET", "POST"))
-@roles_required(*STAFF_ROLES, "student", "parent")
+@roles_required(*STAFF_ROLES, *CLASS_VIEW_ROLES, "student", "parent")
 def homework():
     _require_module("homework")
     db = get_db()
@@ -4383,6 +4638,7 @@ def homework():
         ).fetchall()
         return render_template("homework.html", records=rows, editable=False)
     teacher = user["role"] == "teacher"
+    class_scoped = user["role"] in CLASS_SCOPED_ROLES
     editable = user["role"] in STAFF_ROLES
     editing_id = request.args.get("edit", type=int)
     editing = None
@@ -4391,9 +4647,10 @@ def homework():
             abort(403)
         query = "SELECT h.* FROM homework h JOIN courses c ON c.id=h.course_id WHERE h.id=?"
         params = [editing_id]
-        if teacher:
-            query += " AND c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)"
-            params.append(user["teacher_id"])
+        if class_scoped:
+            scope, scope_params = _course_scope(user)
+            query += scope
+            params.extend(scope_params)
         editing = db.execute(query, params).fetchone()
         if editing is None:
             abort(404)
@@ -4404,10 +4661,10 @@ def homework():
         title = request.form.get("title", "").strip()
         description = request.form.get("description", "").strip()
         due_date = request.form.get("due_date", "").strip()
+        course_scope, course_params = _course_scope(user)
         course = db.execute(
-            "SELECT id FROM courses WHERE id=?"
-            + (" AND id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)" if teacher else ""),
-            (course_id, user["teacher_id"]) if teacher else (course_id,),
+            "SELECT c.id FROM courses c WHERE c.id=?" + course_scope,
+            (course_id, *course_params),
         ).fetchone() if course_id else None
         if not course or not title or not _valid_date(due_date):
             flash("Choose an assigned class, enter a title and provide a valid due date.", "error")
@@ -4430,10 +4687,11 @@ def homework():
         "JOIN courses c ON c.id=h.course_id"
     )
     courses_query = "SELECT id,name FROM courses ORDER BY name"
-    if teacher:
-        query += " WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)"
-        params = (user["teacher_id"],)
-        courses = db.execute(courses_query.replace(" ORDER BY", " WHERE id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?) ORDER BY"), params).fetchall()
+    if class_scoped:
+        scope, params = _course_scope(user)
+        query += " WHERE 1=1" + scope
+        courses_query = "SELECT c.id,c.name FROM courses c WHERE 1=1" + scope + " ORDER BY c.name"
+        courses = db.execute(courses_query, params).fetchall()
     else:
         params = ()
         courses = db.execute(courses_query).fetchall()
@@ -4450,9 +4708,12 @@ def delete_homework(homework_id):
     db = get_db()
     query = "DELETE FROM homework WHERE id=?"
     params = [homework_id]
-    if user["role"] == "teacher":
-        query += " AND course_id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)"
-        params.append(user["teacher_id"])
+    if user["role"] in CLASS_SCOPED_ROLES:
+        course_ids = sorted(_assigned_course_ids(db, user))
+        if not course_ids:
+            abort(404)
+        query += " AND course_id IN (" + ",".join("?" for _ in course_ids) + ")"
+        params.extend(course_ids)
     cursor = db.execute(query, params)
     if not cursor.rowcount:
         abort(404)
@@ -4676,14 +4937,19 @@ def global_search():
     db = get_db()
     user = _current_user()
     role = user["role"]
-    if role in {"super_admin", "manager", "admin", "teacher"}:
-        if role == "teacher":
+    if role in {"super_admin", *CLASS_SCOPED_ROLES}:
+        if role in CLASS_SCOPED_ROLES:
             if not user["teacher_id"]:
+                if role == "teacher":
+                    return jsonify(result)
+            course_ids = sorted(_assigned_course_ids(db, user))
+            if not course_ids:
                 return jsonify(result)
+            marks = ",".join("?" for _ in course_ids)
             rows = db.execute(
                 "SELECT DISTINCT s.id,s.name,s.email,s.grade_level FROM students s "
                 "JOIN enrollments e ON e.student_id=s.id JOIN courses c ON c.id=e.course_id "
-                "WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)", (user["teacher_id"],),
+                f"WHERE c.id IN ({marks})", course_ids,
             ).fetchall()
             link = url_for("views.manage", resource="students")
         else:
@@ -4764,7 +5030,7 @@ def delete_calendar_record(kind, record_id):
 
 
 @bp.route("/timetable", methods=("GET", "POST"))
-@roles_required(*STAFF_ROLES, "student", "parent")
+@roles_required(*STAFF_ROLES, *CLASS_VIEW_ROLES, "student", "parent")
 def timetable():
     _require_module("timetable")
     db = get_db()
@@ -4773,7 +5039,7 @@ def timetable():
         return redirect(url_for("views.dashboard"))
     teacher = user["role"] == "teacher"
     if request.method == "POST":
-        if teacher or user["role"] not in {"super_admin", "manager", "admin"}:
+        if teacher or user["role"] not in {"super_admin", "manager", "admin"} or user["role"] in CLASS_VIEW_ROLES:
             abort(403)
         course_id = _optional_int(request.form.get("course_id"))
         weekday = _optional_int(request.form.get("weekday"))
@@ -4791,7 +5057,9 @@ def timetable():
             flash("Choose a class, weekday and valid start and end times.", "error")
         else:
             course = db.execute(
-                "SELECT id FROM courses WHERE id=?", (course_id,)
+                "SELECT c.id FROM courses c WHERE c.id=?"
+                + (_course_scope(user)[0] if user["role"] in CLASS_SCOPED_ROLES else ""),
+                (course_id, *_course_scope(user)[1]) if user["role"] in CLASS_SCOPED_ROLES else (course_id,),
             ).fetchone()
             if not course:
                 abort(400)
@@ -4807,18 +5075,15 @@ def timetable():
         "FROM timetable t JOIN courses c ON c.id=t.course_id"
     )
     params = ()
-    if teacher:
-        query += " WHERE c.id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?)"
-        params = (user["teacher_id"],)
+    if user["role"] in CLASS_SCOPED_ROLES:
+        scope, params = _course_scope(user)
+        query += " WHERE 1=1" + scope
+        courses_query = "SELECT c.id,c.name FROM courses c WHERE 1=1" + scope + " ORDER BY c.name"
+        courses = db.execute(courses_query, params).fetchall()
+    else:
+        courses_query = "SELECT id,name FROM courses ORDER BY name"
+        courses = db.execute(courses_query).fetchall()
     records = db.execute(query + " ORDER BY t.weekday,t.starts_at", params).fetchall()
-    courses_query = "SELECT id,name FROM courses ORDER BY name"
-    courses = (
-        db.execute(
-            courses_query.replace(" ORDER BY", " WHERE id IN (SELECT course_id FROM course_teachers WHERE teacher_id=?) ORDER BY"),
-            (user["teacher_id"],),
-        ).fetchall()
-        if teacher else db.execute(courses_query).fetchall()
-    )
     return render_template(
         "timetable.html", records=records, courses=courses,
         editable=user["role"] in {"super_admin", "manager", "admin"},
@@ -4906,7 +5171,33 @@ def _read_form(definition, role, user):
             if isinstance(options, str):
                 query = options
                 params = ()
-                if role == "teacher" and name == "enrollment_id":
+                if role in CLASS_SCOPED_ROLES and name in {
+                    "course_id", "enrollment_id", "student_id"
+                }:
+                    course_ids = sorted(_assigned_course_ids(get_db(), user))
+                    marks = ",".join("?" for _ in course_ids)
+                    if not course_ids:
+                        query = query.replace(" ORDER BY", " WHERE 0 ORDER BY", 1)
+                    elif name == "course_id":
+                        query = query.replace(
+                            " ORDER BY", f" WHERE id IN ({marks}) ORDER BY", 1
+                        )
+                        params = tuple(course_ids)
+                    elif name == "student_id":
+                        query = query.replace(
+                            " ORDER BY",
+                            f" WHERE id IN (SELECT student_id FROM enrollments WHERE course_id IN ({marks})) ORDER BY",
+                            1,
+                        )
+                        params = tuple(course_ids)
+                    else:
+                        query = query.replace(
+                            " ORDER BY",
+                            f" WHERE e.course_id IN ({marks}) ORDER BY",
+                            1,
+                        )
+                        params = tuple(course_ids)
+                elif role == "teacher" and name == "enrollment_id":
                     query = query.replace(
                         " ORDER BY",
                         " WHERE e.id IN (SELECT e2.id FROM enrollments e2 JOIN courses c2 "
@@ -4943,6 +5234,14 @@ def _read_form(definition, role, user):
             return None, error
         elif name == "place_of_birth" and len(value) > 120:
             return None, "Place of birth must be 120 characters or fewer."
+        elif role in CLASS_SCOPED_ROLES and name == "grade_level":
+            if not get_db().execute(
+                "SELECT 1 FROM courses WHERE name=? AND id IN ("
+                + ",".join("?" for _ in _assigned_course_ids(get_db(), user))
+                + ")",
+                (value, *_assigned_course_ids(get_db(), user)),
+            ).fetchone():
+                return None, "Choose one of your assigned classes."
         elif name == "email":
             value = value.lower()
         values[name] = value
@@ -4957,7 +5256,33 @@ def _form_fields(definition, values, role, user):
             options = rest[0]
             if isinstance(options, str):
                 query, params = options, ()
-                if role == "teacher" and name == "enrollment_id":
+                if role in CLASS_SCOPED_ROLES and name in {
+                    "course_id", "enrollment_id", "student_id"
+                }:
+                    course_ids = sorted(_assigned_course_ids(get_db(), user))
+                    marks = ",".join("?" for _ in course_ids)
+                    if not course_ids:
+                        query = query.replace(" ORDER BY", " WHERE 0 ORDER BY", 1)
+                    elif name == "course_id":
+                        query = query.replace(
+                            " ORDER BY", f" WHERE id IN ({marks}) ORDER BY", 1
+                        )
+                        params = tuple(course_ids)
+                    elif name == "student_id":
+                        query = query.replace(
+                            " ORDER BY",
+                            f" WHERE id IN (SELECT student_id FROM enrollments WHERE course_id IN ({marks})) ORDER BY",
+                            1,
+                        )
+                        params = tuple(course_ids)
+                    else:
+                        query = query.replace(
+                            " ORDER BY",
+                            f" WHERE e.course_id IN ({marks}) ORDER BY",
+                            1,
+                        )
+                        params = tuple(course_ids)
+                elif role == "teacher" and name == "enrollment_id":
                     query = query.replace(
                         " ORDER BY",
                         " WHERE e.id IN (SELECT e2.id FROM enrollments e2 JOIN courses c2 "

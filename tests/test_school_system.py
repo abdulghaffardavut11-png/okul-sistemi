@@ -67,6 +67,15 @@ class SchoolSystemTestCase(unittest.TestCase):
                     student_id,
                 ),
             )
+            if role in {"manager", "admin", "head_office", "board"}:
+                user_id = get_db().execute(
+                    "SELECT id FROM users WHERE username=?", (username,)
+                ).fetchone()["id"]
+                get_db().execute(
+                    "INSERT INTO user_class_access (user_id,course_id) "
+                    "SELECT ?,id FROM courses",
+                    (user_id,),
+                )
             get_db().commit()
 
     def add_student(self, name="Avery Student", email="avery@example.test"):
@@ -500,15 +509,24 @@ class SchoolSystemTestCase(unittest.TestCase):
         with self.app.app_context():
             db = get_db()
             db.execute(
-                "INSERT INTO students (name,email,grade_level) VALUES (?,?,?)",
-                ("Manager Student", "manager-student@example.test", "8"),
-            )
-            student_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-            db.execute(
                 "INSERT INTO teachers (name,email,subject) VALUES (?,?,?)",
                 ("Manager Teacher", "manager-teacher@example.test", "English"),
             )
             teacher_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            course_id = db.execute(
+                "INSERT INTO courses (name,code,teacher_id) VALUES (?,?,?)",
+                ("7", "G7", teacher_id),
+            ).lastrowid
+            db.execute(
+                "INSERT INTO students (name,email,grade_level) VALUES (?,?,?)",
+                ("Manager Student", "manager-student@example.test", "7"),
+            )
+            student_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            db.execute(
+                "INSERT INTO enrollments(student_id,course_id,academic_year) "
+                "VALUES (?,?,?)",
+                (student_id, course_id, "2026-2027"),
+            )
             db.commit()
         self.add_user("manager", "manager")
         self.sign_in_as("manager", "a-secure-test-password")
@@ -600,6 +618,16 @@ class SchoolSystemTestCase(unittest.TestCase):
         self.assertEqual(self.client.get("/summer-school").status_code, 403)
 
     def test_admin_can_manage_profiles_but_cannot_delete_or_change_settings(self):
+        with self.app.app_context():
+            teacher_id = get_db().execute(
+                "INSERT INTO teachers (name,email,subject) VALUES (?,?,?)",
+                ("Admin Teacher", "admin-teacher@example.test", "English"),
+            ).lastrowid
+            get_db().execute(
+                "INSERT INTO courses (name,code,teacher_id) VALUES (?,?,?)",
+                ("8", "G8", teacher_id),
+            )
+            get_db().commit()
         self.add_user("school-admin", "admin")
         self.sign_in_as("school-admin", "a-secure-test-password")
         response = self.client.post(
@@ -2666,15 +2694,17 @@ class SchoolSystemTestCase(unittest.TestCase):
         with self.app.app_context():
             db = get_db()
             db.execute(
-                "INSERT INTO teachers (name,email,subject) VALUES (?,?,?)",
-                ("Assigned Teacher", "assigned-teacher@example.test", "History"),
-            )
-            teacher_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-            db.execute(
                 "INSERT INTO students (name,email,grade_level) VALUES (?,?,?)",
                 ("Assigned Learner", "learner@example.test", "7"),
             )
             student_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            main_teacher = db.execute(
+                "INSERT INTO teachers (name,email,subject) VALUES ('Class Teacher','main-teacher@example.test','General')"
+            ).lastrowid
+            course_id = db.execute(
+                "INSERT INTO courses (name,code,teacher_id) VALUES ('Grade 7','G7',?)",
+                (main_teacher,),
+            ).lastrowid
             db.commit()
         teacher_response = self.client.post(
             "/users",
@@ -2684,6 +2714,7 @@ class SchoolSystemTestCase(unittest.TestCase):
                 "password": "teacher-password-123",
                 "role": "teacher",
                 "subject": "Science",
+                "class_ids": [str(course_id)],
             },
             follow_redirects=True,
         )
@@ -2703,9 +2734,9 @@ class SchoolSystemTestCase(unittest.TestCase):
             "/users",
             data={
                 "username": "parent-login",
-                "email": "learner@example.test",
                 "password": "parent-password-123",
                 "role": "parent",
+                "student_ids": [str(student_id)],
             },
             follow_redirects=True,
         )
@@ -2745,6 +2776,15 @@ class SchoolSystemTestCase(unittest.TestCase):
 
     def test_teacher_account_creates_private_attachment_and_is_listed_immediately(self):
         self.sign_in()
+        with self.app.app_context():
+            teacher = get_db().execute(
+                "INSERT INTO teachers (name,email,subject) VALUES ('Main Teacher','main@example.test','General')"
+            ).lastrowid
+            course_id = get_db().execute(
+                "INSERT INTO courses (name,code,teacher_id) VALUES ('Grade 1','A-1',?)",
+                (teacher,),
+            ).lastrowid
+            get_db().commit()
         created = self.client.post(
             "/users",
             data={
@@ -2753,6 +2793,7 @@ class SchoolSystemTestCase(unittest.TestCase):
                 "password": "a-secure-test-password",
                 "role": "teacher",
                 "subject": "Mathematics",
+                "class_ids": [str(course_id)],
                 "attachment": (io.BytesIO(b"%PDF-1.4\nteacher document"), "teaching.pdf"),
             },
             content_type="multipart/form-data",
@@ -2773,7 +2814,7 @@ class SchoolSystemTestCase(unittest.TestCase):
                     "SELECT course_id FROM course_teachers WHERE teacher_id=?",
                     (teacher_id,),
                 )},
-                set(),
+                {course_id},
             )
         download_url = f"/users/teacher-attachment/{teacher_id}"
         response = self.client.get(download_url)
@@ -2793,6 +2834,92 @@ class SchoolSystemTestCase(unittest.TestCase):
             data={"username": "other-teacher", "password": "a-secure-test-password"},
         )
         self.assertEqual(teacher_client.get(download_url).status_code, 403)
+
+    def test_class_access_roles_and_parent_child_selector_are_scoped(self):
+        _, course_id, other_course_id, enrollment_ids = self._create_academic_test_records()
+        with self.app.app_context():
+            db = get_db()
+            student_ids = [
+                row["student_id"] for row in db.execute(
+                    "SELECT student_id FROM enrollments WHERE id IN (?,?) ORDER BY id",
+                    enrollment_ids[:2],
+                ).fetchall()
+            ]
+        self.sign_in()
+        users_page = self.client.get("/users").data.decode()
+        self.assertNotIn('href="/manage/teachers"', users_page)
+        self.assertIn('value="head_office"', users_page)
+        self.assertIn('value="board"', users_page)
+        self.assertIn('name="student_ids"', users_page)
+        self.assertIn('name="class_ids"', users_page)
+
+        for username, role, allowed_course in (
+            ("limited-manager", "manager", course_id),
+            ("limited-admin", "admin", other_course_id),
+            ("limited-office", "head_office", course_id),
+            ("limited-board", "board", other_course_id),
+        ):
+            response = self.client.post(
+                "/users",
+                data={
+                    "username": username,
+                    "role": role,
+                    "password": "a-secure-test-password",
+                    "class_ids": [str(allowed_course)],
+                },
+                follow_redirects=True,
+            )
+            self.assertIn(b"User account created.", response.data)
+
+        manager_client = self.app.test_client()
+        manager_client.post("/login", data={
+            "username": "limited-manager", "password": "a-secure-test-password"
+        })
+        roster = manager_client.get("/manage/students").data.decode()
+        self.assertIn("Roster Student 1", roster)
+        self.assertNotIn("Roster Student 3", roster)
+        self.assertEqual(manager_client.get(f"/attendance?course_id={other_course_id}").status_code, 403)
+        self.assertEqual(manager_client.get(f"/gradebook?course_id={other_course_id}").status_code, 403)
+
+        office_client = self.app.test_client()
+        office_client.post("/login", data={
+            "username": "limited-office", "password": "a-secure-test-password"
+        })
+        self.assertIn("Roster Student 1", office_client.get("/manage/students").data.decode())
+        self.assertEqual(office_client.post(
+            "/attendance",
+            data={"course_id": course_id, "attendance_date": "2026-10-20"},
+        ).status_code, 403)
+
+        parent = self.client.post(
+            "/users",
+            data={
+                "username": "two-children-parent",
+                "role": "parent",
+                "password": "a-secure-test-password",
+                "student_ids": [str(student_ids[0]), str(student_ids[1])],
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"User account created.", parent.data)
+        parent_client = self.app.test_client()
+        parent_client.post("/login", data={
+            "username": "two-children-parent", "password": "a-secure-test-password"
+        })
+        first_dashboard = parent_client.get("/")
+        self.assertIn(b"Roster Student 1", first_dashboard.data)
+        self.assertIn(b"Roster Student 2", first_dashboard.data)
+        switched = parent_client.post(
+            "/parent/select-child", data={"student_id": student_ids[1]}
+        )
+        self.assertEqual(switched.status_code, 302)
+        self.assertIn(b"Roster Student 2", parent_client.get("/").data)
+        self.assertEqual(
+            parent_client.post(
+                "/parent/select-child", data={"student_id": enrollment_ids[2]}
+            ).status_code,
+            403,
+        )
 
     def test_calendar_requests_and_timetable_are_managed(self):
         self.sign_in()

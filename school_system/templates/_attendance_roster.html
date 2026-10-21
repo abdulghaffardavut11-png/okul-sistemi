@@ -1,6 +1,6 @@
 {#- Shared roll-call form used by /attendance and the Student Registration tab.
     Everyone defaults to "Present" (Geldi); the teacher only changes exceptions. -#}
-{% macro roster_form(students, action_url, hidden) %}
+{% macro roster_form(students, action_url, hidden, editable=true) %}
   <style>
     .roll-summary{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
     .roll-count{display:inline-flex;gap:6px;align-items:baseline;padding:6px 12px;border-radius:999px;font-size:.8rem;font-weight:750;border:1px solid currentColor}
@@ -30,6 +30,7 @@
     }
   </style>
   {% set statuses = [('Present','roll-present'),('Absent','roll-absent'),('Late','roll-late'),('Excused','roll-excused')] %}
+  {% if editable %}
   <form method="post" action="{{ action_url }}" class="attendance-form" data-roll-form>
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     {% for name, value in hidden.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
@@ -77,4 +78,14 @@
       refresh();
     })();
   </script>
+  {% else %}
+    <ul class="roll-list">
+      {% for student in students %}
+        <li class="roll-row">
+          <div class="roll-name">{{ student.name }}{% if student.grade_level %}<small>{{ student.grade_level }}</small>{% endif %}</div>
+          <div>{{ (student.status or 'Present')|translate(language) }}</div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
 {% endmacro %}

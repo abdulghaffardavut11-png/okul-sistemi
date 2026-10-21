@@ -25,7 +25,7 @@
     <section class="portal-card roster-card">
       <div class="roster-title"><div><h2>{{ selected_course.name }}</h2><p>{{ attendance_date }} · {{ students|length }} {{ 'students'|translate(language) }}</p></div></div>
       {% if students %}
-        {{ roster_form(students, url_for('views.attendance_roster'), {'course_id': selected_course.id, 'attendance_date': attendance_date}) }}
+        {{ roster_form(students, url_for('views.attendance_roster'), {'course_id': selected_course.id, 'attendance_date': attendance_date}, session.get('role') in ('super_admin', 'manager', 'admin', 'teacher')) }}
       {% else %}<div class="card-empty"><p>{{ 'No students are enrolled in this class.'|translate(language) }}</p></div>{% endif %}
     </section>
   {% endif %}

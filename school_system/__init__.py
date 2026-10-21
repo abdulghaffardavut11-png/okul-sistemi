@@ -145,6 +145,7 @@ def create_app(test_config=None):
             if endpoint == "views.users" and role != "super_admin":
                 continue
             if endpoint in {"views.manage_classes", "views.teacher_classes", "views.message_archive", "views.trash"} and role != "super_admin":
+
                 continue
             if endpoint == "views.student_registration" and role not in {
                 "super_admin", "manager", "admin"

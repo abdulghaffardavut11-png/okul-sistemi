@@ -483,7 +483,15 @@ def init_db():
     )
     db.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
-        ("school_name", "WISE HOUSE INTERNATIONAL SCHOOL"),
+        ("school_name", "Wisehouse International School"),
+    )
+    db.execute(
+        "UPDATE settings SET value=? WHERE key=? AND value=?",
+        (
+            "Wisehouse International School",
+            "school_name",
+            "WISE HOUSE INTERNATIONAL SCHOOL",
+        ),
     )
     for key, value in (
         ("academic_year", "2026-2027"),

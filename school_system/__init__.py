@@ -17,7 +17,9 @@ def create_app(test_config=None):
         SECRET_KEY=os.environ.get("SECRET_KEY") or secrets.token_hex(32),
         DATABASE=os.path.join(app.instance_path, "school.sqlite3"),
         UPLOAD_FOLDER=os.environ.get("UPLOAD_FOLDER", os.path.join(app.instance_path, "uploads")),
-        SITE_URL=os.environ.get("SITE_URL", "http://localhost:5000").rstrip("/"),
+        SITE_URL=os.environ.get(
+            "SITE_URL", "https://wisehouse-internationalschool.onrender.com"
+        ).rstrip("/"),
         AI_API_URL=os.environ.get("AI_API_URL", "https://api.openai.com/v1/chat/completions"),
         AI_API_KEY=os.environ.get("AI_API_KEY", ""),
         AI_MODEL=os.environ.get("AI_MODEL", "gpt-4o-mini"),
@@ -267,7 +269,7 @@ def create_app(test_config=None):
         ]
         return {
             "resources": RESOURCES,
-            "school_name": setting["value"] if setting else "WISE HOUSE INTERNATIONAL SCHOOL",
+            "school_name": setting["value"] if setting else "Wisehouse International School",
             "nav_groups": visible_groups,
             "nav_items": visible_nav_items,
             "site_settings": {
@@ -286,7 +288,7 @@ def create_app(test_config=None):
                 "primary_color": all_settings.get("primary_color", "#1758a6"),
                 "login_background": all_settings.get("login_background", "#f1f5f9"),
                 "school_name": all_settings.get(
-                    "school_name", "WISE HOUSE INTERNATIONAL SCHOOL"
+                    "school_name", "Wisehouse International School"
                 ),
             },
             "role_label": {

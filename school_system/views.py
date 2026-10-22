@@ -2425,7 +2425,7 @@ def export_student_report(student_id):
     ).fetchone()
     stream = io.StringIO(newline="")
     writer = csv.writer(stream)
-    writer.writerow(("Wise House School - Official Student Summary",))
+    writer.writerow(("Wisehouse International School - Official Student Summary",))
     writer.writerow(("Student", _safe_csv_value(student["name"])))
     writer.writerow(("Class / Grade", _safe_csv_value(student["grade_level"])))
     writer.writerow(("Academic Year", academic_year))

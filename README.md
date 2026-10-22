@@ -1,4 +1,4 @@
-# WISE HOUSE INTERNATIONAL SCHOOL Portal
+# Wisehouse International School Portal
 
 A Flask and SQLite school management portal with role-scoped workflows, student and parent dashboards, a customizable interface, and a separately indexable public school page.
 
@@ -54,11 +54,11 @@ Orders, bulk SMS drafts, tutoring and parent meetings use internal request recor
 1. Push this project to a private GitHub repository. Create a new **Web Service** on Render and connect the repository. `.python-version` selects Python 3.11.
 2. Use **Python** as the runtime, `pip install -r requirements.txt` as the build command, and `gunicorn --bind 0.0.0.0:$PORT --workers 2 'school_system:create_app()'` as the start command. `render.yaml` contains the corresponding blueprint configuration.
 3. Attach a persistent disk at `/var/data` (at least 1 GB). SQLite and uploaded school logos must live on persistent storage; the blueprint sets `DATABASE=/var/data/school.sqlite3` and `UPLOAD_FOLDER=/var/data/uploads`.
-4. Configure `FLASK_ENV=production`, a stable randomly generated `SECRET_KEY`, and `SITE_URL=https://your-real-domain.example` in the service environment. `SECRET_KEY` must remain private and must not change on routine deploys. Set `SITE_URL` to the final HTTPS custom domain before asking search engines to index the public page.
+4. Configure `FLASK_ENV=production`, a stable randomly generated `SECRET_KEY`, and `SITE_URL=https://wisehouse-internationalschool.onrender.com` in the service environment. `SECRET_KEY` must remain private and must not change on routine deploys. Set `SITE_URL` to the final HTTPS domain before asking search engines to index the public page.
 5. In Render, open the service Shell and create the first Super Admin with `python3 -m flask --app school_system:create_app create-admin`. Do not put a password into deployment configuration or source control.
-6. Add your custom domain in Render’s service settings, create the DNS records Render specifies at your registrar, wait for DNS/HTTPS verification, and then update `SITE_URL` to `https://your-domain`.
-7. Verify `/healthz`, sign in, create initial school accounts, and confirm the disk is mounted. SQLite-backed deployments need a persistent disk and a single service instance; use PostgreSQL before scaling to multiple instances.
-8. Submit `https://your-domain/sitemap.xml` in Google Search Console and request indexing for `https://your-domain/school`. The school portal and sign-in pages intentionally send `noindex` and are excluded from the sitemap to protect student records. Only the public school overview is made indexable. For meaningful search visibility, replace its introductory copy with approved public facts (location, programs and contact details); private student/parent pages must never be made public for SEO.
+6. The default Render domain is `https://wisehouse-internationalschool.onrender.com`. If you add a custom domain in Render’s service settings, create the DNS records Render specifies at your registrar, wait for DNS/HTTPS verification, and update `SITE_URL` to that domain.
+7. Verify `https://wisehouse-internationalschool.onrender.com/healthz`, sign in, create initial school accounts, and confirm the disk is mounted. SQLite-backed deployments need a persistent disk and a single service instance; use PostgreSQL before scaling to multiple instances.
+8. Submit `https://wisehouse-internationalschool.onrender.com/sitemap.xml` in Google Search Console and request indexing for `https://wisehouse-internationalschool.onrender.com/school`. The school portal and sign-in pages intentionally send `noindex` and are excluded from the sitemap to protect student records. Only the public school overview is made indexable. For meaningful search visibility, replace its introductory copy with approved public facts (location, programs and contact details); private student/parent pages must never be made public for SEO.
 
 Render’s persistent disks are generally a paid feature. Railway and other hosts can be used if they provide equivalent durable storage for both the SQLite database and logo uploads. Do not deploy this SQLite configuration on ephemeral serverless storage such as a standard Vercel function filesystem.
 

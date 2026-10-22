@@ -8,7 +8,7 @@ import unittest
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from school_system import create_app
-from school_system.db import get_db
+from school_system.db import get_db, init_db
 
 
 class SchoolSystemTestCase(unittest.TestCase):
@@ -125,27 +125,45 @@ class SchoolSystemTestCase(unittest.TestCase):
         self.assertIn("No super administrator exists", result.output)
 
     def test_school_name_is_customizable_from_admin_settings(self):
+        with self.app.app_context():
+            db = get_db()
+            db.execute(
+                "UPDATE settings SET value=? WHERE key='school_name'",
+                ("WISE HOUSE INTERNATIONAL SCHOOL",),
+            )
+            init_db()
+            self.assertEqual(
+                db.execute(
+                    "SELECT value FROM settings WHERE key='school_name'"
+                ).fetchone()["value"],
+                "Wisehouse International School",
+            )
+        self.assertEqual(
+            self.app.config["SITE_URL"],
+            "https://wisehouse-internationalschool.onrender.com",
+        )
+
         response = self.client.get("/settings")
         self.assertEqual(response.status_code, 302)
 
         response = self.sign_in()
-        self.assertIn(b"WISE HOUSE INTERNATIONAL SCHOOL", response.data)
+        self.assertIn(b"Wisehouse International School", response.data)
 
         response = self.client.get("/settings")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"WISE HOUSE INTERNATIONAL SCHOOL", response.data)
+        self.assertIn(b"Wisehouse International School", response.data)
 
         response = self.client.post(
             "/settings",
             data={
-                "school_name": "WISE HOUSE INTERNATIONAL SCHOOL",
+                "school_name": "Wisehouse International School",
                 "primary_color": "#1758a6",
                 "login_background": "#f1f5f9",
             },
             follow_redirects=True,
         )
         self.assertIn(b"School branding saved.", response.data)
-        self.assertIn(b"WISE HOUSE INTERNATIONAL SCHOOL", response.data)
+        self.assertIn(b"Wisehouse International School", response.data)
 
         response = self.client.post(
             "/settings", data={"school_name": "   "}, follow_redirects=True
@@ -319,7 +337,7 @@ class SchoolSystemTestCase(unittest.TestCase):
         saved = self.client.post(
             "/settings",
             data={
-                "school_name": "WISE HOUSE INTERNATIONAL SCHOOL",
+                "school_name": "Wisehouse International School",
                 "primary_color": "#1758a6",
                 "login_background": "#f1f5f9",
                 "sidebar_color": "#336699",
@@ -2485,17 +2503,17 @@ class SchoolSystemTestCase(unittest.TestCase):
         response = self.client.post(
             "/settings",
             data={
-                "school_name": "WISE HOUSE INTERNATIONAL SCHOOL",
+                "school_name": "Wisehouse International School",
                 "primary_color": "#1758a6",
                 "login_background": "#f1f5f9",
                 "language": "tr",
-                "landing_title": "Welcome to Wise House",
+                "landing_title": "Welcome to Wisehouse International School",
                 "landing_text": "A welcoming school community.",
             },
             follow_redirects=True,
         )
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Wise House", self.client.get("/school").data)
+        self.assertIn(b"Wisehouse International School", self.client.get("/school").data)
         self.assertIn(b"Ana Sayfa", self.client.get("/").data)
 
     def test_teacher_data_is_limited_to_assigned_classes_and_students(self):
@@ -3217,9 +3235,15 @@ class SchoolSystemTestCase(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn(b"index, follow", page.data)
         self.assertIn(b"og:title", page.data)
+        self.assertIn(b"https://wisehouse-internationalschool.onrender.com/school", page.data)
         self.assertIn(b"noindex, nofollow", self.client.get("/login").data)
         self.assertIn(b"/sitemap.xml", self.client.get("/robots.txt").data)
-        self.assertIn(b"<urlset", self.client.get("/sitemap.xml").data)
+        sitemap = self.client.get("/sitemap.xml")
+        self.assertIn(b"<urlset", sitemap.data)
+        self.assertIn(
+            b"https://wisehouse-internationalschool.onrender.com/school",
+            sitemap.data,
+        )
 
 
 if __name__ == "__main__":

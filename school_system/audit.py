@@ -24,7 +24,11 @@ def now_text():
 
 
 def _digest(previous, values):
-    payload = "\x1f".join([previous] + ["" if v is None else str(v) for v in values])
+    payload = json.dumps(
+        [previous] + ["" if v is None else str(v) for v in values],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

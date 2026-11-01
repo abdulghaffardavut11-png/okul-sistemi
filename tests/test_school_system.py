@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -115,6 +116,46 @@ class SchoolSystemTestCase(unittest.TestCase):
             follow_redirects=True,
         )
         self.assertIn(b"Dashboard", response.data)
+
+    def test_database_environment_path_persists_data_across_app_restarts(self):
+        database = os.path.join(self.temp_dir.name, "render-data", "school.sqlite3")
+        config = {
+            "TESTING": True,
+            "UPLOAD_FOLDER": os.path.join(self.temp_dir.name, "uploads"),
+            "SECRET_KEY": "test-key",
+        }
+        with patch.dict(os.environ, {"DATABASE": database}):
+            first_app = create_app(config)
+            self.assertEqual(first_app.config["DATABASE"], database)
+            with first_app.app_context():
+                db = get_db()
+                db.execute(
+                    "UPDATE settings SET value=? WHERE key='school_name'",
+                    ("Persistent Test School",),
+                )
+                db.execute(
+                    "DELETE FROM settings WHERE key='navigation_seeded'"
+                )
+                nav_count = db.execute(
+                    "SELECT COUNT(*) FROM navigation_items"
+                ).fetchone()[0]
+                db.commit()
+
+            second_app = create_app(config)
+            with second_app.app_context():
+                db = get_db()
+                self.assertEqual(
+                    db.execute(
+                        "SELECT value FROM settings WHERE key='school_name'"
+                    ).fetchone()["value"],
+                    "Persistent Test School",
+                )
+                self.assertEqual(
+                    db.execute(
+                        "SELECT COUNT(*) FROM navigation_items"
+                    ).fetchone()[0],
+                    nav_count,
+                )
 
     def test_reset_admin_cli_rejects_unknown_user(self):
         result = self.app.test_cli_runner().invoke(

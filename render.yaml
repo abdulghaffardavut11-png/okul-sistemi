@@ -3,6 +3,7 @@ services:
     name: wisehouse-internationalschool
     runtime: python
     plan: starter
+    region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 'school_system:create_app()'
     envVars:
@@ -10,8 +11,10 @@ services:
         value: production
       - key: SECRET_KEY
         generateValue: true
-      - key: DATABASE
-        value: /var/data/school.sqlite3
+      - key: SQLALCHEMY_DATABASE_URI
+        fromDatabase:
+          name: wisehouse-school-db
+          property: connectionString
       - key: UPLOAD_FOLDER
         value: /var/data/uploads
       - key: SITE_URL
@@ -20,3 +23,9 @@ services:
       name: school-portal-data
       mountPath: /var/data
       sizeGB: 1
+databases:
+  - name: wisehouse-school-db
+    databaseName: wisehouse_school
+    user: wisehouse_school
+    plan: basic-256mb
+    region: oregon

@@ -11,5 +11,6 @@ packaging==26.3
 Werkzeug==3.1.9
 openpyxl==3.1.5
 et_xmlfile==2.0.0
+psycopg[binary]==3.2.10
 WTForms==3.2.1
 zipp==3.23.1

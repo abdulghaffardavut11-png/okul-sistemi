@@ -15,7 +15,8 @@ def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
     app.config.from_mapping(
         SECRET_KEY=os.environ.get("SECRET_KEY") or secrets.token_hex(32),
-        DATABASE=os.path.join(app.instance_path, "school.sqlite3"),
+        DATABASE=os.environ.get("DATABASE")
+        or os.path.join(app.instance_path, "school.sqlite3"),
         UPLOAD_FOLDER=os.environ.get("UPLOAD_FOLDER", os.path.join(app.instance_path, "uploads")),
         SITE_URL=os.environ.get(
             "SITE_URL", "https://wisehouse-internationalschool.onrender.com"
@@ -39,8 +40,18 @@ def create_app(test_config=None):
             app.config["WTF_CSRF_ENABLED"] = False
 
     os.makedirs(app.instance_path, exist_ok=True)
+    if app.config["DATABASE"] != ":memory:":
+        os.makedirs(
+            os.path.dirname(os.path.abspath(app.config["DATABASE"])),
+            exist_ok=True,
+        )
 
     with app.app_context():
+        db = get_db()
+        database_was_empty = not db.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
+        ).fetchone()
         init_db()
         from .db import get_db as _get_db
         from .views import _sync_class_enrollments
@@ -79,19 +90,21 @@ def create_app(test_config=None):
             "SELECT value FROM settings WHERE key='navigation_seeded'"
         ).fetchone()
         if not navigation_seeded:
-            order = 0
-            for category, items in PORTAL_GROUPS:
-                for title, icon, endpoint, *args in items:
-                    route_arg = args[0] if args else ""
-                    db.execute(
-                        "INSERT INTO navigation_items "
-                        "(category,title,icon,url_endpoint,route_arg,is_active,display_order) "
-                        "VALUES (?,?,?,?,?,1,?)",
-                        (category, title, icon, endpoint, route_arg, order),
-                    )
-                    order += 1
+            if database_was_empty:
+                order = 0
+                for category, items in PORTAL_GROUPS:
+                    for title, icon, endpoint, *args in items:
+                        route_arg = args[0] if args else ""
+                        db.execute(
+                            "INSERT INTO navigation_items "
+                            "(category,title,icon,url_endpoint,route_arg,is_active,display_order) "
+                            "VALUES (?,?,?,?,?,1,?)",
+                            (category, title, icon, endpoint, route_arg, order),
+                        )
+                        order += 1
             db.execute(
-                "INSERT INTO settings (key,value) VALUES ('navigation_seeded','1')"
+                "INSERT OR IGNORE INTO settings (key,value) "
+                "VALUES ('navigation_seeded','1')"
             )
             db.commit()
 
